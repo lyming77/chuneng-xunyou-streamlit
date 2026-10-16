@@ -1,0 +1,464 @@
+from __future__ import annotations
+
+import math
+from pathlib import Path
+
+import altair as alt
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+from webapp.model_service import (
+    DEFAULT_COEF,
+    DEFAULT_FLAT,
+    DEFAULT_ZONE_TEXT,
+    build_model_frame,
+    config_signature,
+    default_config,
+    grid_csv_bytes,
+    make_power_grid,
+    read_uploaded_timeseries,
+    run_configuration,
+    run_grid,
+    schedule_excel_bytes,
+    upload_template_csv,
+)
+from webapp.report_builder import build_report_bytes
+
+
+st.set_page_config(
+    page_title="新能源配储寻优平台",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+    :root { --green:#105848; --gold:#e8ad3c; --cream:#f3f0e8; --ink:#1c2a22; }
+    .stApp { background:#f3f0e8; color:var(--ink); }
+    [data-testid="stHeader"] { background:rgba(243,240,232,.92); }
+    .hero { background:#105848; color:white; border-radius:18px; padding:28px 34px; margin-bottom:16px; }
+    .hero h1 { margin:0 0 6px; font-size:2.15rem; letter-spacing:.03em; }
+    .hero p { margin:0; color:#dcebe4; }
+    .stepbar { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:8px 0 18px; }
+    .step { background:white; border:1px solid #dedcd2; border-radius:12px; padding:12px 14px; }
+    .step b { color:#105848; }
+    [data-testid="stMetric"] { background:white; border:1px solid #dedcd2; padding:14px; border-radius:12px; }
+    div[data-testid="stDataFrame"] { border:1px solid #dedcd2; border-radius:10px; overflow:hidden; }
+    .boundary { background:#fff8e6; border-left:4px solid #e8ad3c; padding:10px 14px; border-radius:6px; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="hero">
+      <h1>新能源配储寻优 · 云端测算平台</h1>
+      <p>方案A｜全年15分钟数据｜全口径工程造价｜全网格容量比较｜选定方案报告</p>
+    </div>
+    <div class="stepbar">
+      <div class="step"><b>01 数据与参数</b><br>上传全年时序，填写项目条件</div>
+      <div class="step"><b>02 全网格测算</b><br>比较功率、时长、收益和资本金IRR</div>
+      <div class="step"><b>03 选定方案报告</b><br>重新调度并下载明细和投资分析报告</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def state_default(name, value):
+    if name not in st.session_state:
+        st.session_state[name] = value
+    return st.session_state[name]
+
+
+defaults = state_default("defaults", default_config())
+state_default("saved_signature", None)
+state_default("grid_result", None)
+state_default("detail_result", None)
+state_default("report_bytes", None)
+state_default("schedule_bytes", None)
+
+
+@st.cache_data(show_spinner=False)
+def cached_read_upload(data: bytes, filename: str) -> pd.DataFrame:
+    return read_uploaded_timeseries(data, filename)
+
+
+def number(label, key, value, *, step=1.0, min_value=None, max_value=None, help=None):
+    kwargs = dict(label=label, value=value, step=step, key=key, help=help)
+    if min_value is not None:
+        kwargs["min_value"] = min_value
+    if max_value is not None:
+        kwargs["max_value"] = max_value
+    return st.number_input(**kwargs)
+
+
+def render_parameters(base: dict) -> dict:
+    config = dict(base)
+    st.subheader("项目基本信息")
+    left, middle, right = st.columns(3)
+    with left:
+        config["project_name"] = st.text_input("项目名称", value=base["project_name"], key="p_project_name")
+        config["project_type"] = st.selectbox("新能源类型", ["风电", "光伏"],
+                                               index=0 if base["project_type"] == "风电" else 1,
+                                               key="p_project_type")
+    with middle:
+        config["station_power_mw"] = number("新能源装机容量（MW）", "p_station", base["station_power_mw"],
+                                             step=1.0, min_value=0.1)
+        config["aux_power_mw"] = number("厂用电功率（MW）", "p_aux", base["aux_power_mw"],
+                                         step=0.1, min_value=0.0)
+    with right:
+        config["mechanism_ratio_pct"] = number("机制电量/上网电量比（%）", "p_mech", base["mechanism_ratio_pct"],
+                                                step=1.0, min_value=0.0, max_value=100.0)
+        config["capacity_compensation_yuan_per_mw_month"] = number(
+            "容量补偿电价（元/MW·月）", "p_capacity_price",
+            base["capacity_compensation_yuan_per_mw_month"], step=1000.0, min_value=0.0)
+
+    with st.expander("调度与储能参数", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            config["soc_min_pct"] = number("SOC下限（%）", "p_soc_min", base["soc_min_pct"],
+                                            step=1.0, min_value=0.0, max_value=99.0)
+            config["soc_max_pct"] = number("SOC上限（%）", "p_soc_max", base["soc_max_pct"],
+                                            step=1.0, min_value=1.0, max_value=100.0)
+        with c2:
+            config["efficiency_pct"] = number("储能综合效率（%）", "p_eta", base["efficiency_pct"],
+                                               step=1.0, min_value=1.0, max_value=100.0)
+            config["minimum_spread_yuan_per_mwh"] = number(
+                "最低预测充放价差（元/MWh）", "p_spread", base["minimum_spread_yuan_per_mwh"],
+                step=10.0, min_value=0.0)
+        with c3:
+            config["maximum_charge_price_yuan_per_mwh"] = number(
+                "最高预测充电价格（元/MWh）", "p_charge_price", base["maximum_charge_price_yuan_per_mwh"],
+                step=10.0)
+            config["curtailment_price_yuan_per_mwh"] = number(
+                "限电统计电价阈值（元/MWh）", "p_curt_price", base["curtailment_price_yuan_per_mwh"],
+                step=10.0, help="只用于限电量统计，不是充电资格限制。")
+
+    with st.expander("工程造价参数", expanded=True):
+        st.markdown('<div class="boundary"><b>标准工程边界：</b>站内储能及接入工程；不含新建送出线路和主变扩容。</div>',
+                    unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            config["battery_cost_wan_per_mwh"] = number(
+                "电池系统（万元/MWh）", "p_battery_cost", base["battery_cost_wan_per_mwh"], step=1.0, min_value=0.0)
+            config["land_cost_wan_per_mwh"] = number(
+                "土地及场地（万元/MWh）", "p_land_cost", base["land_cost_wan_per_mwh"], step=0.5, min_value=0.0)
+        with c2:
+            config["pcs_cost_wan_per_mw"] = number(
+                "PCS（万元/MW）", "p_pcs_cost", base["pcs_cost_wan_per_mw"], step=1.0, min_value=0.0)
+            config["station_equipment_cost_wan_per_mw"] = number(
+                "站内设备（万元/MW）", "p_station_cost", base["station_equipment_cost_wan_per_mw"], step=1.0, min_value=0.0)
+        with c3:
+            config["installation_rate_pct"] = number(
+                "建筑安装费率（%）", "p_install", base["installation_rate_pct"], step=0.1, min_value=0.0)
+            config["engineering_rate_pct"] = number(
+                "管理设计监理费率（%）", "p_engineering", base["engineering_rate_pct"], step=0.1, min_value=0.0)
+        with c4:
+            config["predevelopment_cost_wan"] = number(
+                "前期研究申报费（万元）", "p_predev", base["predevelopment_cost_wan"], step=10.0, min_value=0.0)
+            config["contingency_rate_pct"] = number(
+                "基本预备费率（%）", "p_contingency", base["contingency_rate_pct"], step=0.1, min_value=0.0)
+        c5, c6 = st.columns(2)
+        with c5:
+            config["battery_unit_mwh"] = number(
+                "电池舱单体容量（MWh/舱）", "p_battery_unit", base["battery_unit_mwh"], step=0.5, min_value=0.1)
+        with c6:
+            config["pcs_unit_mw"] = number(
+                "PCS单套功率（MW/套）", "p_pcs_unit", base["pcs_unit_mw"], step=0.5, min_value=0.1)
+
+    with st.expander("财务参数", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            config["project_years"] = int(number("项目评价期（年）", "p_years", int(base["project_years"]),
+                                                  step=1, min_value=1, max_value=40))
+            config["loan_term_years"] = int(number("首次贷款期限（年）", "p_loan_term", int(base["loan_term_years"]),
+                                                    step=1, min_value=1, max_value=40))
+        with c2:
+            config["replacement_loan_term_years"] = int(number(
+                "更换电池贷款期限（年）", "p_rep_loan", int(base["replacement_loan_term_years"]),
+                step=1, min_value=1, max_value=20))
+            config["equity_ratio_pct"] = number(
+                "资本金比例（%）", "p_equity", base["equity_ratio_pct"], step=1.0, min_value=0.0, max_value=100.0)
+        with c3:
+            config["loan_rate_pct"] = number(
+                "贷款利率（%）", "p_loan_rate", base["loan_rate_pct"], step=0.1, min_value=0.0)
+            config["equity_discount_rate_pct"] = number(
+                "资本金折现率（%）", "p_equity_rate", base["equity_discount_rate_pct"], step=0.5, min_value=0.0)
+        with c4:
+            config["battery_degradation_pct"] = number(
+                "电池年衰减率（%）", "p_degr", base["battery_degradation_pct"], step=0.1, min_value=0.0)
+            config["om_ratio_pct"] = number(
+                "年生产费用/初始投资（%）", "p_om", base["om_ratio_pct"], step=0.1, min_value=0.0)
+            config["income_tax_pct"] = number(
+                "所得税率（%）", "p_tax", base["income_tax_pct"], step=1.0, min_value=0.0, max_value=100.0)
+
+    with st.expander("工商业分时电价", expanded=False):
+        flat_default = pd.DataFrame({"月份": list(range(1, 13)),
+                                     "平段电价（元/MWh）": [base["flat_prices"][m] for m in range(1, 13)]})
+        flat_edited = st.data_editor(
+            flat_default, hide_index=True, width="stretch", key="p_flat_editor",
+            disabled=["月份"], column_config={
+                "月份": st.column_config.NumberColumn(format="%d月"),
+                "平段电价（元/MWh）": st.column_config.NumberColumn(min_value=0.0, format="%.2f"),
+            })
+        config["flat_prices"] = {
+            int(row["月份"]): float(row["平段电价（元/MWh）"])
+            for _, row in flat_edited.iterrows()
+        }
+        coeff_default = pd.DataFrame({"时段": list(DEFAULT_COEF),
+                                      "系数": [base["tou_coefficients"][key] for key in DEFAULT_COEF]})
+        coeff_edited = st.data_editor(
+            coeff_default, hide_index=True, width="stretch", key="p_coeff_editor",
+            disabled=["时段"], column_config={"系数": st.column_config.NumberColumn(min_value=0.0, format="%.3f")})
+        config["tou_coefficients"] = {str(row["时段"]): float(row["系数"])
+                                       for _, row in coeff_edited.iterrows()}
+        zone_default = pd.DataFrame([
+            {"月份": group, **categories} for group, categories in base["zone_text"].items()
+        ])
+        zone_edited = st.data_editor(zone_default, hide_index=True, width="stretch",
+                                     key="p_zone_editor", disabled=["月份"])
+        config["zone_text"] = {
+            str(row["月份"]): {
+                key: (str(row[key]).strip() if pd.notna(row[key]) and str(row[key]).strip() else "—")
+                for key in ["尖峰", "高峰", "低谷", "深谷"]
+            }
+            for _, row in zone_edited.iterrows()
+        }
+    return config
+
+
+with st.sidebar:
+    st.markdown("### 测算口径")
+    st.caption("当前前端仅运行方案A。上传数据和计算结果仅保存在当前会话，云端不长期留存。")
+    st.markdown("**固定规则**")
+    st.write("- 15分钟、96点/日")
+    st.write("- 同一时段禁止同时充放电")
+    st.write("- 放电功率＋新能源功率≤场站装机")
+    st.write("- 全网格采用连续造价估算")
+
+
+tab_input, tab_grid, tab_report = st.tabs(["① 数据与参数", "② 全网格结果", "③ 选定方案与报告"])
+
+with tab_input:
+    st.subheader("上传全年生产与市场时序")
+    left, right = st.columns([2, 1])
+    with left:
+        upload = st.file_uploader(
+            "上传CSV或XLSX；XLSX优先读取“时序数据”工作表",
+            type=["csv", "xlsx", "xlsm"], key="timeseries_upload")
+    with right:
+        st.download_button("下载全年时序CSV模板", upload_template_csv(),
+                           file_name="全年生产与市场时序模板.csv", mime="text/csv",
+                           width="stretch")
+    timeseries = None
+    upload_bytes = b""
+    if upload is not None:
+        upload_bytes = upload.getvalue()
+        try:
+            timeseries = cached_read_upload(upload_bytes, upload.name)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("时序点数", f"{len(timeseries):,}")
+            c2.metric("完整天数", f"{timeseries['时间戳'].dt.date.nunique():,}")
+            c3.metric("起始时间", timeseries["时间戳"].min().strftime("%Y-%m-%d"))
+            c4.metric("结束时间", timeseries["时间戳"].max().strftime("%Y-%m-%d"))
+            fill_stats = timeseries.attrs.get("power_fill_stats", {})
+            filled = {column: count for column, count in fill_stats.items() if count}
+            if filled:
+                detail = "、".join(f"{column}补全{count}点" for column, count in filled.items())
+                st.warning("数据校验通过；功率字段已按主模型交叉补全规则处理：" + detail + "。")
+            else:
+                st.success("数据校验通过：时间连续、每天96点、必填字段完整。")
+            with st.expander("查看上传数据前96点"):
+                st.dataframe(timeseries.head(96), width="stretch", height=360)
+        except Exception as exc:
+            st.error(str(exc))
+    config_now = render_parameters(defaults)
+    if st.button("保存数据与参数", type="primary", width="stretch", disabled=timeseries is None):
+        if config_now["soc_min_pct"] >= config_now["soc_max_pct"]:
+            st.error("SOC下限必须低于SOC上限。")
+        elif config_now["loan_term_years"] > config_now["project_years"]:
+            st.error("首次贷款期限不得超过项目评价期。")
+        else:
+            try:
+                frame = build_model_frame(timeseries, config_now)
+                signature = config_signature(config_now, upload_bytes)
+                changed = signature != st.session_state.saved_signature
+                st.session_state.config = config_now
+                st.session_state.timeseries = timeseries
+                st.session_state.model_frame = frame
+                st.session_state.upload_bytes = upload_bytes
+                st.session_state.saved_signature = signature
+                if changed:
+                    st.session_state.grid_result = None
+                    st.session_state.detail_result = None
+                    st.session_state.report_bytes = None
+                    st.session_state.schedule_bytes = None
+                st.success("已保存。请进入第二步运行全网格测算。")
+            except Exception as exc:
+                st.error(f"参数校验失败：{exc}")
+
+with tab_grid:
+    if st.session_state.saved_signature is None:
+        st.info("请先在第一步上传全年数据并保存参数。")
+    else:
+        config = st.session_state.config
+        station_power = float(config["station_power_mw"])
+        default_ratio = 50.0 if config["project_type"] == "光伏" else 30.0
+        st.subheader("设置全网格范围")
+        c1, c2 = st.columns(2)
+        with c1:
+            maximum_ratio = st.number_input("储能功率上限/新能源装机（%）", min_value=1.0,
+                                            max_value=100.0, value=default_ratio, step=1.0,
+                                            key="grid_ratio")
+        with c2:
+            durations = st.multiselect("持续时长H（小时）", [2, 4, 6, 8, 10],
+                                       default=[2, 4, 6, 8, 10], key="grid_hours")
+        powers = make_power_grid(station_power, config["project_type"], maximum_ratio)
+        st.caption("功率网格：1—5MW按1MW递增，10MW以上按5MW递增。"
+                   f"当前共{len(powers)}个功率点、{len(durations)}个时长点、"
+                   f"{len(powers) * len(durations)}个组合。")
+        st.info("全年方案A单个组合通常需要10—30秒；当前网格预计需要约"
+                f"{len(powers) * len(durations) * 10 / 60:.0f}—"
+                f"{len(powers) * len(durations) * 30 / 60:.0f}分钟。计算期间请勿重复提交。")
+        if st.button("运行全网格测算", type="primary", width="stretch",
+                     disabled=not durations):
+            progress_bar = st.progress(0.0)
+            status = st.empty()
+            def update_progress(done, total, label):
+                progress_bar.progress(done / total)
+                status.caption(f"正在计算 {label}　{done}/{total}")
+            result = run_grid(st.session_state.model_frame, config, powers, durations, update_progress)
+            st.session_state.grid_result = result
+            st.session_state.detail_result = None
+            st.session_state.report_bytes = None
+            st.session_state.schedule_bytes = None
+            status.empty()
+            progress_bar.empty()
+            st.success("全网格测算完成。")
+
+        grid = st.session_state.grid_result
+        if grid is not None:
+            failed = grid[grid["error"].fillna("").ne("")] if "error" in grid else pd.DataFrame()
+            success = grid[grid["error"].fillna("").eq("")].copy() if "error" in grid else grid.copy()
+            if success.empty:
+                st.error("全网格没有成功结果，请检查错误信息。")
+                st.dataframe(grid[["P", "H", "error"]], width="stretch")
+            else:
+                best_eq = success.loc[success["eq_irr"].idxmax()]
+                best_npv = success.loc[success["fi_npv"].idxmax()]
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("资本金IRR最高配置", f"{best_eq.P:g}MW / {best_eq.H:g}h")
+                c2.metric("最高资本金IRR", f"{best_eq.eq_irr:.2f}%")
+                c3.metric("全投资NPV最高配置", f"{best_npv.P:g}MW / {best_npv.H:g}h")
+                c4.metric("最高全投资NPV", f"{best_npv.fi_npv:,.1f}万元")
+                if not failed.empty:
+                    st.warning(f"另有{len(failed)}个组合未完成，可在结果表的错误列查看原因。")
+                display = success.sort_values("eq_irr", ascending=False).rename(columns={
+                    "P": "功率(MW)", "H": "时长(h)", "E": "容量(MWh)",
+                    "annual_cycles": "年充电次数", "charge_mwh": "年充电量(MWh)",
+                    "discharge_mwh": "年放电量(MWh)", "R_year": "经营净收益(万元)",
+                    "R_cap": "容量补偿(万元)", "total_revenue": "首年总收入(万元)",
+                    "capex": "初始投资(万元)", "fi_npv": "全投资NPV(万元)",
+                    "fi_irr": "全投资IRR(%)", "eq_npv": "资本金NPV(万元)",
+                    "eq_irr": "资本金IRR(%)",
+                })
+                st.dataframe(display, hide_index=True, width="stretch", height=520)
+                heat = success.copy()
+                heat["配置"] = heat.apply(lambda row: f"{row.P:g}MW/{row.E:g}MWh", axis=1)
+                heatmap = alt.Chart(heat).mark_rect(cornerRadius=3).encode(
+                    x=alt.X("P:O", title="储能功率（MW）"),
+                    y=alt.Y("H:O", title="持续时长（h）"),
+                    color=alt.Color("eq_irr:Q", title="资本金IRR（%）", scale=alt.Scale(scheme="yellowgreenblue")),
+                    tooltip=["配置:N", alt.Tooltip("eq_irr:Q", title="资本金IRR", format=".2f"),
+                             alt.Tooltip("fi_npv:Q", title="全投资NPV", format=",.1f"),
+                             alt.Tooltip("annual_cycles:Q", title="年充电次数", format=".1f")],
+                ).properties(height=300)
+                st.altair_chart(heatmap, width="stretch")
+                st.download_button("下载全网格CSV", grid_csv_bytes(grid),
+                                   file_name=f"{config['project_name']}_方案A_全网格.csv",
+                                   mime="text/csv", width="stretch")
+
+with tab_report:
+    grid = st.session_state.grid_result
+    if grid is None:
+        st.info("请先完成第二步全网格测算。")
+    else:
+        success = grid[grid["error"].fillna("").eq("")].copy() if "error" in grid else grid.copy()
+        if success.empty:
+            st.error("没有可供选择的成功配置。")
+        else:
+            success = success.sort_values(["P", "H"])
+            options = [(float(row.P), int(row.H)) for row in success.itertuples()]
+            best = success.loc[success["eq_irr"].idxmax()]
+            default_option = (float(best.P), int(best.H))
+            selected = st.selectbox(
+                "选择储能功率和时长",
+                options,
+                index=options.index(default_option),
+                format_func=lambda item: f"{item[0]:g}MW / {item[0] * item[1]:g}MWh（{item[1]}h）",
+                key="selected_config")
+            power, duration = selected
+            selected_row = success[(success["P"] == power) & (success["H"] == duration)].iloc[0]
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("初始投资", f"{selected_row.capex:,.1f}万元")
+            c2.metric("首年总收入", f"{selected_row.total_revenue:,.1f}万元")
+            c3.metric("全投资NPV", f"{selected_row.fi_npv:,.1f}万元")
+            c4.metric("资本金IRR", "—" if not np.isfinite(selected_row.eq_irr) else f"{selected_row.eq_irr:.2f}%")
+            if st.button("计算选定配置并生成报告", type="primary", width="stretch"):
+                with st.spinner("正在重新计算全年调度并生成报告……"):
+                    detail = run_configuration(st.session_state.model_frame, st.session_state.config,
+                                               power, duration)
+                    st.session_state.detail_result = detail
+                    st.session_state.schedule_bytes = schedule_excel_bytes(detail)
+                    st.session_state.report_bytes = build_report_bytes(st.session_state.config, grid, detail)
+                st.success("选定配置计算完成。")
+
+            detail = st.session_state.detail_result
+            if detail is not None:
+                metrics = detail["metrics"]
+                if not math.isclose(metrics["P"], power) or metrics["H"] != duration:
+                    st.warning("当前展示的是上一次生成的配置，请点击按钮重新生成所选配置。")
+                else:
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("全年充电量", f"{metrics['charge_mwh']:,.1f}MWh")
+                    c2.metric("全年放电量", f"{metrics['discharge_mwh']:,.1f}MWh")
+                    c3.metric("等效满循环", f"{metrics['annual_cycles']:,.1f}次")
+                    c4.metric("限电电量利用率", f"{metrics['curtailment_capture_pct']:,.2f}%")
+                    profile = detail["average_profile"]
+                    power_chart = alt.Chart(profile).mark_bar().encode(
+                        x=alt.X("点:O", title="一天96个15分钟点", axis=alt.Axis(labelAngle=0, values=list(range(0, 96, 8)))),
+                        y=alt.Y("储能功率(MW):Q", title="储能功率（MW）"),
+                        color=alt.condition(alt.datum["储能功率(MW)"] >= 0,
+                                            alt.value("#e8ad3c"), alt.value("#105848")),
+                        tooltip=["时刻:N", alt.Tooltip("储能功率(MW):Q", format=".2f")],
+                    )
+                    price_chart = alt.Chart(profile).mark_line(color="#a04028", strokeWidth=2.2).encode(
+                        x=alt.X("点:O"),
+                        y=alt.Y("实时电价(元/MWh):Q", title="实时电价（元/MWh）"),
+                        tooltip=["时刻:N", alt.Tooltip("实时电价(元/MWh):Q", format=".2f")],
+                    )
+                    chart = alt.layer(power_chart, price_chart).resolve_scale(y="independent").properties(
+                        height=380, title="全年96点平均储能功率与实时市场电价")
+                    st.altair_chart(chart, width="stretch")
+                    col1, col2 = st.columns(2)
+                    safe_name = "".join(character if character.isalnum() or character in "-_" else "_"
+                                        for character in st.session_state.config["project_name"])
+                    with col1:
+                        st.download_button(
+                            "下载全年充放电明细", st.session_state.schedule_bytes,
+                            file_name=f"{safe_name}_{power:g}MW_{power*duration:g}MWh_充放电情况.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            width="stretch")
+                    with col2:
+                        st.download_button(
+                            "下载投资分析报告", st.session_state.report_bytes,
+                            file_name=f"{safe_name}_{power:g}MW_{power*duration:g}MWh_投资分析报告.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            width="stretch")
+
+st.caption("测算结果为输入数据、方案A调度规则和当前参数下的历史回测结果。")

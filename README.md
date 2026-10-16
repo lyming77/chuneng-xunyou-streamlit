@@ -4,4 +4,6 @@
 
 本仓库只包含应用代码、必要模型脚本和空白报告模板，不包含项目收资数据、历史结果或生成报告。
 
+在线访问：https://chuneng-xunyou.streamlit.app/
+
 入口文件：`streamlit_app.py`

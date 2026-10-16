@@ -128,7 +128,8 @@ def solve_window(P, H, init_soc, curt, fc, mkt_fc, tou, gn, end_frac=E_REF, end_
     return cc_, cg_, pu_, pv_
 
 
-def solve_mpc(P, H, df, verbose=False, end_frac=E_REF, return_schedule=False, P_STATION=None, ramp=None):
+def solve_mpc(P, H, df, verbose=False, end_frac=E_REF, return_schedule=False,
+              P_STATION=None, ramp=None, day_progress=None):
     """滚动 MPC 全年仿真,返回 (R_year, r_cap, (rev_tou, rev_mkt, cost_chg))。
 
     return_schedule=True 时额外返回第 4 元:schedule dict(cc/cg/pu/pv/soc 全年执行序列)。
@@ -215,6 +216,8 @@ def solve_mpc(P, H, df, verbose=False, end_frac=E_REF, return_schedule=False, P_
             soc_exec[t] = soc
         if verbose and (d + 1) % 60 == 0:
             print(f"  已滚动 {d + 1}/{n_days} 天, 当前实际 SOC={soc / E_cap:.2%}", flush=True)
+        if day_progress and (d == 0 or (d + 1) % 5 == 0 or d + 1 == n_days):
+            day_progress(d + 1, n_days, df["time"].iloc[t0].date())
 
     # 结算:免费充电 = 弃电充电 + 补充电(都当弃电,免费、不吞上网电量);付费充电 = 发电充电 cg
     pc_exec = cc_exec + cg_exec

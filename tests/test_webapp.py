@@ -15,6 +15,7 @@ from webapp.model_service import (
     make_power_grid,
     normalize_timeseries,
     run_configuration,
+    run_grid,
     schedule_excel_bytes,
 )
 from webapp.report_builder import build_report_bytes
@@ -68,6 +69,20 @@ class WebAppTests(unittest.TestCase):
                                   "error": ""}])
         report = build_report_bytes(self.config, grid, detail)
         self.assertTrue(report.startswith(b"PK"))
+
+    def test_grid_reports_day_progress_and_partial_rows(self):
+        frame = build_model_frame(self.timeseries, self.config)
+        progress = []
+        partial = []
+        result = run_grid(
+            frame, self.config, [1.0], [2],
+            lambda done, total, label: progress.append((done, total, label)),
+            lambda rows: partial.append(rows.copy()),
+        )
+        self.assertEqual(len(result), 1)
+        self.assertTrue(any("天" in label for _, _, label in progress))
+        self.assertEqual(len(partial), 1)
+        self.assertEqual(len(partial[0]), 1)
 
 
 if __name__ == "__main__":

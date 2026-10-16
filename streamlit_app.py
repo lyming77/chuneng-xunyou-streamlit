@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from pathlib import Path
 
 import altair as alt
@@ -322,23 +323,42 @@ with tab_grid:
         st.caption("功率网格：1—5MW按1MW递增，10MW以上按5MW递增。"
                    f"当前共{len(powers)}个功率点、{len(durations)}个时长点、"
                    f"{len(powers) * len(durations)}个组合。")
-        st.info("全年方案A单个组合通常需要10—30秒；当前网格预计需要约"
-                f"{len(powers) * len(durations) * 10 / 60:.0f}—"
-                f"{len(powers) * len(durations) * 30 / 60:.0f}分钟。计算期间请勿重复提交。")
+        st.info("全年方案A需要逐日求解365个日前计划，云端算力波动较大。"
+                "开始后页面会持续显示已完成天数和预计剩余时间，每完成一个组合立即输出一行结果。"
+                "计算期间请勿重复提交或关闭页面。")
         if st.button("运行全网格测算", type="primary", width="stretch",
                      disabled=not durations):
             progress_bar = st.progress(0.0)
             status = st.empty()
+            partial_table = st.empty()
+            started_at = time.monotonic()
             def update_progress(done, total, label):
-                progress_bar.progress(done / total)
-                status.caption(f"正在计算 {label}　{done}/{total}")
-            result = run_grid(st.session_state.model_frame, config, powers, durations, update_progress)
+                fraction = min(1.0, max(0.0, done / total))
+                progress_bar.progress(fraction)
+                elapsed = time.monotonic() - started_at
+                eta = elapsed * (1 - fraction) / fraction if fraction > 0 else None
+                eta_text = f"｜预计剩余约{eta / 60:.1f}分钟" if eta is not None else ""
+                status.caption(
+                    f"正在计算：{label}｜总进度{fraction:.1%}｜"
+                    f"已用{elapsed / 60:.1f}分钟{eta_text}")
+            def show_partial(partial):
+                columns = ["P", "H", "E", "annual_cycles", "total_revenue",
+                           "fi_npv", "eq_irr", "error"]
+                available = [column for column in columns if column in partial.columns]
+                partial_table.dataframe(partial[available], hide_index=True, width="stretch")
+            try:
+                result = run_grid(st.session_state.model_frame, config, powers, durations,
+                                  update_progress, show_partial)
+            except Exception as exc:
+                st.error(f"全网格测算中断：{exc}")
+                st.stop()
             st.session_state.grid_result = result
             st.session_state.detail_result = None
             st.session_state.report_bytes = None
             st.session_state.schedule_bytes = None
             status.empty()
             progress_bar.empty()
+            partial_table.empty()
             st.success("全网格测算完成。")
 
         grid = st.session_state.grid_result

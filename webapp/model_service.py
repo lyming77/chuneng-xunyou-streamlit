@@ -301,10 +301,12 @@ def _finance(P: float, H: int, annual_revenue: float, capacity_revenue: float, c
     )
 
 
-def _result_row(P: float, H: int, frame: pd.DataFrame, config: dict) -> tuple[dict, dict]:
+def _result_row(P: float, H: int, frame: pd.DataFrame, config: dict,
+                day_progress: Callable[[int, int, object], None] | None = None) -> tuple[dict, dict]:
     annual_revenue, capacity_revenue, parts, schedule = solve_mpc(
         P, H, frame, return_schedule=True,
-        P_STATION=float(config["station_power_mw"]), ramp=None)
+        P_STATION=float(config["station_power_mw"]), ramp=None,
+        day_progress=day_progress)
     charge = np.asarray(schedule["cc"]) + np.asarray(schedule["cg"])
     discharge = np.asarray(schedule["pu"]) + np.asarray(schedule["pv"])
     energy = P * H
@@ -337,18 +339,28 @@ def _result_row(P: float, H: int, frame: pd.DataFrame, config: dict) -> tuple[di
 
 
 def run_grid(frame: pd.DataFrame, config: dict, powers: list[float], hours: list[int],
-             progress: Callable[[int, int, str], None] | None = None) -> pd.DataFrame:
+             progress: Callable[[float, int, str], None] | None = None,
+             partial_result: Callable[[pd.DataFrame], None] | None = None) -> pd.DataFrame:
     combinations = [(float(power), int(duration)) for power in powers for duration in hours]
     rows = []
     with _MODEL_LOCK, temporary_model_settings(config):
         for index, (power, duration) in enumerate(combinations, 1):
             label = f"{power:g}MW/{power * duration:g}MWh"
+            if progress:
+                progress(index - 1, len(combinations), f"{label}｜准备计算")
+            def update_day(done, total_days, date):
+                if progress:
+                    overall = index - 1 + done / total_days
+                    progress(overall, len(combinations),
+                             f"{label}｜{date}｜{done}/{total_days}天")
             try:
-                row, _ = _result_row(power, duration, frame, config)
+                row, _ = _result_row(power, duration, frame, config, update_day)
                 row["error"] = ""
             except Exception as exc:
                 row = {"P": power, "H": duration, "E": power * duration, "error": str(exc)}
             rows.append(row)
+            if partial_result:
+                partial_result(pd.DataFrame(rows))
             if progress:
                 progress(index, len(combinations), label)
     result = pd.DataFrame(rows)

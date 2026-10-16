@@ -91,6 +91,9 @@ def default_config() -> dict:
         "pcs_cost_wan_per_mw": 27.0,
         "station_equipment_cost_wan_per_mw": 20.0,
         "installation_rate_pct": 7.766,
+        "include_land_cost": False,
+        "include_predevelopment_cost": False,
+        "include_engineering_cost": False,
         "predevelopment_cost_wan": 150.0,
         "engineering_rate_pct": 5.065,
         "contingency_rate_pct": 3.0,
@@ -226,15 +229,36 @@ def build_model_frame(timeseries: pd.DataFrame, config: dict) -> pd.DataFrame:
 def cost_params(config: dict) -> dict:
     return {
         "battery_per_mwh": float(config["battery_cost_wan_per_mwh"]) * 1e4,
-        "land_per_mwh": float(config["land_cost_wan_per_mwh"]) * 1e4,
+        "land_per_mwh": (float(config["land_cost_wan_per_mwh"]) * 1e4
+                         if config.get("include_land_cost", False) else 0.0),
         "pcs_per_mw": float(config["pcs_cost_wan_per_mw"]) * 1e4,
         "station_equipment_per_mw": float(config["station_equipment_cost_wan_per_mw"]) * 1e4,
-        "fixed_predevelopment": float(config["predevelopment_cost_wan"]) * 1e4,
+        "fixed_predevelopment": (float(config["predevelopment_cost_wan"]) * 1e4
+                                 if config.get("include_predevelopment_cost", False) else 0.0),
         "install_rate": float(config["installation_rate_pct"]) / 100,
-        "engineering_rate": float(config["engineering_rate_pct"]) / 100,
+        "engineering_rate": (float(config["engineering_rate_pct"]) / 100
+                             if config.get("include_engineering_cost", False) else 0.0),
         "contingency_rate": float(config["contingency_rate_pct"]) / 100,
         "battery_unit_mwh": float(config["battery_unit_mwh"]),
         "pcs_unit_mw": float(config["pcs_unit_mw"]),
+    }
+
+
+def cost_benchmark(config: dict, power_mw: float = 10.0, hours: float = 2.0) -> dict:
+    """按给定功率和时长计算连续估算造价及元/W、元/Wh指标。"""
+    breakdown = M.investment_breakdown(
+        float(power_mw), float(hours), cost_model="detailed", discrete=False,
+        cost_params=cost_params(config))
+    total = float(breakdown["total"])
+    energy_mwh = float(power_mw) * float(hours)
+    return {
+        "power_mw": float(power_mw),
+        "hours": float(hours),
+        "energy_mwh": energy_mwh,
+        "total_wan": total / 1e4,
+        "yuan_per_w": total / (float(power_mw) * 1e6),
+        "yuan_per_wh": total / (energy_mwh * 1e6),
+        "breakdown": breakdown,
     }
 
 

@@ -16,6 +16,7 @@ from webapp.model_service import (
     best_valid_row,
     build_model_frame,
     config_signature,
+    cost_benchmark,
     default_config,
     grid_csv_bytes,
     make_power_grid,
@@ -90,8 +91,9 @@ def cached_read_upload(data: bytes, filename: str) -> pd.DataFrame:
     return read_uploaded_timeseries(data, filename)
 
 
-def number(label, key, value, *, step=1.0, min_value=None, max_value=None, help=None):
-    kwargs = dict(label=label, value=value, step=step, key=key, help=help)
+def number(label, key, value, *, step=1.0, min_value=None, max_value=None, help=None,
+           disabled=False):
+    kwargs = dict(label=label, value=value, step=step, key=key, help=help, disabled=disabled)
     if min_value is not None:
         kwargs["min_value"] = min_value
     if max_value is not None:
@@ -144,25 +146,47 @@ def render_parameters(base: dict) -> dict:
     with st.expander("工程造价参数", expanded=True):
         st.markdown('<div class="boundary"><b>标准工程边界：</b>站内储能及接入工程；不含新建送出线路和主变扩容。</div>',
                     unsafe_allow_html=True)
+        st.caption("固定计入：电池系统、PCS升压一体化系统、站内公用及二次系统、建筑安装工程、基本预备费。")
+        o1, o2, o3 = st.columns(3)
+        with o1:
+            config["include_land_cost"] = st.checkbox(
+                "计入土地及场地投资", value=bool(base.get("include_land_cost", False)), key="p_include_land")
+        with o2:
+            config["include_predevelopment_cost"] = st.checkbox(
+                "计入前期研究及申报费", value=bool(base.get("include_predevelopment_cost", False)),
+                key="p_include_predev")
+        with o3:
+            config["include_engineering_cost"] = st.checkbox(
+                "计入管理、设计及监理费", value=bool(base.get("include_engineering_cost", False)),
+                key="p_include_engineering")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             config["battery_cost_wan_per_mwh"] = number(
-                "电池系统（万元/MWh）", "p_battery_cost", base["battery_cost_wan_per_mwh"], step=1.0, min_value=0.0)
+                "电池系统（万元/MWh）", "p_battery_cost", base["battery_cost_wan_per_mwh"],
+                step=1.0, min_value=0.0,
+                help="包含电芯/电池簇、BMS、热管理、电池舱及舱内消防等。")
             config["land_cost_wan_per_mwh"] = number(
-                "土地及场地（万元/MWh）", "p_land_cost", base["land_cost_wan_per_mwh"], step=0.5, min_value=0.0)
+                "土地及场地（万元/MWh）", "p_land_cost", base["land_cost_wan_per_mwh"],
+                step=0.5, min_value=0.0, disabled=not config["include_land_cost"])
         with c2:
             config["pcs_cost_wan_per_mw"] = number(
-                "PCS（万元/MW）", "p_pcs_cost", base["pcs_cost_wan_per_mw"], step=1.0, min_value=0.0)
+                "PCS升压一体化系统（万元/MW）", "p_pcs_cost", base["pcs_cost_wan_per_mw"],
+                step=1.0, min_value=0.0,
+                help="包含PCS、升压变压器及配套开关设备。")
             config["station_equipment_cost_wan_per_mw"] = number(
-                "站内设备（万元/MW）", "p_station_cost", base["station_equipment_cost_wan_per_mw"], step=1.0, min_value=0.0)
+                "站内公用及二次系统（万元/MW）", "p_station_cost",
+                base["station_equipment_cost_wan_per_mw"], step=1.0, min_value=0.0,
+                help="包含EMS/AGC/AVC、通信、计量、保护、站级消防、交直流电源及线缆等；不重复计取PCS包内设备。")
         with c3:
             config["installation_rate_pct"] = number(
                 "建筑安装费率（%）", "p_install", base["installation_rate_pct"], step=0.1, min_value=0.0)
             config["engineering_rate_pct"] = number(
-                "管理设计监理费率（%）", "p_engineering", base["engineering_rate_pct"], step=0.1, min_value=0.0)
+                "管理设计监理费率（%）", "p_engineering", base["engineering_rate_pct"],
+                step=0.1, min_value=0.0, disabled=not config["include_engineering_cost"])
         with c4:
             config["predevelopment_cost_wan"] = number(
-                "前期研究申报费（万元）", "p_predev", base["predevelopment_cost_wan"], step=10.0, min_value=0.0)
+                "前期研究申报费（万元）", "p_predev", base["predevelopment_cost_wan"],
+                step=10.0, min_value=0.0, disabled=not config["include_predevelopment_cost"])
             config["contingency_rate_pct"] = number(
                 "基本预备费率（%）", "p_contingency", base["contingency_rate_pct"], step=0.1, min_value=0.0)
         c5, c6 = st.columns(2)
@@ -172,6 +196,18 @@ def render_parameters(base: dict) -> dict:
         with c6:
             config["pcs_unit_mw"] = number(
                 "PCS单套功率（MW/套）", "p_pcs_unit", base["pcs_unit_mw"], step=0.5, min_value=0.1)
+
+        st.markdown("**2小时储能造价快速校核**")
+        check_power = number("校核功率（MW）", "p_cost_check_power", 10.0,
+                             step=1.0, min_value=0.1,
+                             help="按该功率和2小时容量连续估算；固定费用会随校核规模摊薄。")
+        benchmark = cost_benchmark(config, check_power, 2.0)
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("校核配置", f"{check_power:g}MW / {benchmark['energy_mwh']:g}MWh")
+        b2.metric("估算总投资", f"{benchmark['total_wan']:,.1f}万元")
+        b3.metric("功率单位造价", f"{benchmark['yuan_per_w']:.3f}元/W")
+        b4.metric("容量单位造价", f"{benchmark['yuan_per_wh']:.3f}元/Wh")
+        st.caption("校核采用连续造价，不执行电池舱和PCS套数向上取整；用于快速判断当前输入造价水平。")
 
     with st.expander("财务参数", expanded=False):
         c1, c2, c3, c4 = st.columns(4)

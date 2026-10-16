@@ -243,8 +243,10 @@ def build_report_bytes(config: dict, grid: pd.DataFrame, detail: dict) -> bytes:
 
     _add_heading(document, "五、投资构成")
     labels = [
-        ("电池系统", "battery_system"), ("土地及场地", "land"), ("PCS", "pcs"),
-        ("站内升压、开关、保护及消防", "station_equipment"),
+        ("电池系统（含舱内配套）", "battery_system"),
+        ("土地及场地", "land"),
+        ("PCS升压一体化系统", "pcs"),
+        ("站内公用及二次系统", "station_equipment"),
         ("建筑安装工程", "construction_install"), ("前期研究及申报", "predevelopment"),
         ("建设管理、勘察设计及监理", "management_design_supervision"),
         ("基本预备费", "contingency"),
@@ -254,9 +256,20 @@ def build_report_bytes(config: dict, grid: pd.DataFrame, detail: dict) -> bytes:
          _fmt(investment[key] / finance["capex"] * 100 if finance["capex"] else 0, 1, "%")]
         for label, key in labels
     ] + [["合计", _fmt(finance["capex"] / 1e4, 1), "100.0%"]], widths=[7.4, 3.6, 3.4])
+    optional_items = [
+        ("土地及场地", bool(config.get("include_land_cost", False))),
+        ("前期研究及申报", bool(config.get("include_predevelopment_cost", False))),
+        ("建设管理、勘察设计及监理", bool(config.get("include_engineering_cost", False))),
+    ]
+    included = "、".join(label for label, enabled in optional_items if enabled) or "无"
+    excluded = "、".join(label for label, enabled in optional_items if not enabled) or "无"
     _add_text(document,
-              f"初始总投资为{finance['capex']/1e4:,.1f}万元。造价包括站内储能设备、场地、"
-              "建筑安装、前期工作、设计监理和基本预备费，不包括新建送出线路和主变扩容。")
+              f"初始总投资为{finance['capex']/1e4:,.1f}万元。固定计入电池系统、PCS升压一体化系统、"
+              "站内公用及二次系统、建筑安装工程和基本预备费；"
+              f"本项目可选费用中计入：{included}，未计入：{excluded}。"
+              "电池系统包含BMS、热管理、电池舱及舱内消防；PCS升压一体化系统包含PCS、"
+              "升压变压器及配套开关；站内公用及二次系统包含EMS、通信、计量、保护及站级消防等。"
+              "标准工程边界不包括新建送出线路和主变扩容。")
 
     _add_heading(document, "六、收益与财务评价")
     _add_table(document, ["收益项目", "万元/年"], [

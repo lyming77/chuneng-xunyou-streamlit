@@ -12,6 +12,8 @@ sys.path.insert(0, str(ROOT))
 from webapp.model_service import (
     best_valid_row,
     build_model_frame,
+    cost_benchmark,
+    cost_params,
     default_config,
     make_power_grid,
     normalize_timeseries,
@@ -90,6 +92,26 @@ class WebAppTests(unittest.TestCase):
                               "fi_npv": [-20.0, -10.0]})
         self.assertIsNone(best_valid_row(frame, "eq_irr"))
         self.assertEqual(best_valid_row(frame, "fi_npv")["P"], 2.0)
+
+    def test_optional_cost_items_follow_project_switches(self):
+        params = cost_params(self.config)
+        self.assertEqual(params["land_per_mwh"], 0.0)
+        self.assertEqual(params["fixed_predevelopment"], 0.0)
+        self.assertEqual(params["engineering_rate"], 0.0)
+        self.config.update({
+            "include_land_cost": True,
+            "include_predevelopment_cost": True,
+            "include_engineering_cost": True,
+        })
+        params = cost_params(self.config)
+        self.assertGreater(params["land_per_mwh"], 0.0)
+        self.assertGreater(params["fixed_predevelopment"], 0.0)
+        self.assertGreater(params["engineering_rate"], 0.0)
+
+    def test_two_hour_cost_benchmark_reports_power_and_energy_unit_prices(self):
+        benchmark = cost_benchmark(self.config, power_mw=10.0, hours=2.0)
+        self.assertGreater(benchmark["total_wan"], 0.0)
+        self.assertAlmostEqual(benchmark["yuan_per_w"], benchmark["yuan_per_wh"] * 2.0)
 
 
 if __name__ == "__main__":

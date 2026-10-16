@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from webapp.model_service import (
+    best_valid_row,
     build_model_frame,
     default_config,
     make_power_grid,
@@ -83,6 +84,12 @@ class WebAppTests(unittest.TestCase):
         self.assertTrue(any("天" in label for _, _, label in progress))
         self.assertEqual(len(partial), 1)
         self.assertEqual(len(partial[0]), 1)
+
+    def test_best_valid_row_handles_all_missing_values(self):
+        frame = pd.DataFrame({"P": [1.0, 2.0], "eq_irr": [np.nan, np.inf],
+                              "fi_npv": [-20.0, -10.0]})
+        self.assertIsNone(best_valid_row(frame, "eq_irr"))
+        self.assertEqual(best_valid_row(frame, "fi_npv")["P"], 2.0)
 
 
 if __name__ == "__main__":

@@ -338,6 +338,16 @@ def _result_row(P: float, H: int, frame: pd.DataFrame, config: dict,
     return row, detail
 
 
+def best_valid_row(frame: pd.DataFrame, column: str) -> pd.Series | None:
+    """返回指定指标的最大有效值所在行；整列为空或无穷时返回 None。"""
+    if frame.empty or column not in frame:
+        return None
+    values = pd.to_numeric(frame[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    if not values.notna().any():
+        return None
+    return frame.loc[values.idxmax()]
+
+
 def run_grid(frame: pd.DataFrame, config: dict, powers: list[float], hours: list[int],
              progress: Callable[[float, int, str], None] | None = None,
              partial_result: Callable[[pd.DataFrame], None] | None = None) -> pd.DataFrame:

@@ -13,6 +13,7 @@ from webapp.model_service import (
     DEFAULT_COEF,
     DEFAULT_FLAT,
     DEFAULT_ZONE_TEXT,
+    best_valid_row,
     build_model_frame,
     config_signature,
     default_config,
@@ -369,16 +370,25 @@ with tab_grid:
                 st.error("全网格没有成功结果，请检查错误信息。")
                 st.dataframe(grid[["P", "H", "error"]], width="stretch")
             else:
-                best_eq = success.loc[success["eq_irr"].idxmax()]
-                best_npv = success.loc[success["fi_npv"].idxmax()]
+                best_eq = best_valid_row(success, "eq_irr")
+                best_npv = best_valid_row(success, "fi_npv")
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("资本金IRR最高配置", f"{best_eq.P:g}MW / {best_eq.H:g}h")
-                c2.metric("最高资本金IRR", f"{best_eq.eq_irr:.2f}%")
-                c3.metric("全投资NPV最高配置", f"{best_npv.P:g}MW / {best_npv.H:g}h")
-                c4.metric("最高全投资NPV", f"{best_npv.fi_npv:,.1f}万元")
+                if best_eq is None:
+                    c1.metric("资本金IRR最高配置", "无有效值")
+                    c2.metric("最高资本金IRR", "不可计算")
+                    st.warning("本次成功组合的资本金现金流均未形成可计算的有效IRR根，请结合资本金NPV和全投资NPV判断。")
+                else:
+                    c1.metric("资本金IRR最高配置", f"{best_eq.P:g}MW / {best_eq.H:g}h")
+                    c2.metric("最高资本金IRR", f"{best_eq.eq_irr:.2f}%")
+                if best_npv is None:
+                    c3.metric("全投资NPV最高配置", "无有效值")
+                    c4.metric("最高全投资NPV", "不可计算")
+                else:
+                    c3.metric("全投资NPV最高配置", f"{best_npv.P:g}MW / {best_npv.H:g}h")
+                    c4.metric("最高全投资NPV", f"{best_npv.fi_npv:,.1f}万元")
                 if not failed.empty:
                     st.warning(f"另有{len(failed)}个组合未完成，可在结果表的错误列查看原因。")
-                display = success.sort_values("eq_irr", ascending=False).rename(columns={
+                display = success.sort_values("eq_irr", ascending=False, na_position="last").rename(columns={
                     "P": "功率(MW)", "H": "时长(h)", "E": "容量(MWh)",
                     "annual_cycles": "年充电次数", "charge_mwh": "年充电量(MWh)",
                     "discharge_mwh": "年放电量(MWh)", "R_year": "经营净收益(万元)",
@@ -390,13 +400,18 @@ with tab_grid:
                 st.dataframe(display, hide_index=True, width="stretch", height=520)
                 heat = success.copy()
                 heat["配置"] = heat.apply(lambda row: f"{row.P:g}MW/{row.E:g}MWh", axis=1)
+                heat_column = "eq_irr" if best_eq is not None else "fi_npv"
+                heat_title = "资本金IRR（%）" if best_eq is not None else "全投资NPV（万元）"
+                heat_tooltip = "资本金IRR" if best_eq is not None else "全投资NPV"
+                tooltips = ["配置:N", alt.Tooltip(f"{heat_column}:Q", title=heat_tooltip, format=".2f")]
+                if best_eq is not None:
+                    tooltips.append(alt.Tooltip("fi_npv:Q", title="全投资NPV", format=",.1f"))
+                tooltips.append(alt.Tooltip("annual_cycles:Q", title="年充电次数", format=".1f"))
                 heatmap = alt.Chart(heat).mark_rect(cornerRadius=3).encode(
                     x=alt.X("P:O", title="储能功率（MW）"),
                     y=alt.Y("H:O", title="持续时长（h）"),
-                    color=alt.Color("eq_irr:Q", title="资本金IRR（%）", scale=alt.Scale(scheme="yellowgreenblue")),
-                    tooltip=["配置:N", alt.Tooltip("eq_irr:Q", title="资本金IRR", format=".2f"),
-                             alt.Tooltip("fi_npv:Q", title="全投资NPV", format=",.1f"),
-                             alt.Tooltip("annual_cycles:Q", title="年充电次数", format=".1f")],
+                    color=alt.Color(f"{heat_column}:Q", title=heat_title, scale=alt.Scale(scheme="yellowgreenblue")),
+                    tooltip=tooltips,
                 ).properties(height=300)
                 st.altair_chart(heatmap, width="stretch")
                 st.download_button("下载全网格CSV", grid_csv_bytes(grid),
@@ -414,7 +429,11 @@ with tab_report:
         else:
             success = success.sort_values(["P", "H"])
             options = [(float(row.P), int(row.H)) for row in success.itertuples()]
-            best = success.loc[success["eq_irr"].idxmax()]
+            best = best_valid_row(success, "eq_irr")
+            if best is None:
+                best = best_valid_row(success, "fi_npv")
+            if best is None:
+                best = success.iloc[0]
             default_option = (float(best.P), int(best.H))
             selected = st.selectbox(
                 "选择储能功率和时长",

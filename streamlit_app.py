@@ -51,6 +51,11 @@ st.markdown(
     [data-testid="stMetric"] { background:white; border:1px solid #dedcd2; padding:14px; border-radius:12px; }
     div[data-testid="stDataFrame"] { border:1px solid #dedcd2; border-radius:10px; overflow:hidden; }
     .boundary { background:#fff8e6; border-left:4px solid #e8ad3c; padding:10px 14px; border-radius:6px; }
+    div[data-testid="stTextInput"] label,
+    div[data-testid="stNumberInput"] label,
+    div[data-testid="stSelectbox"] label { min-height:2.4rem; align-items:flex-end; }
+    .template-copy { padding:.2rem 0; }
+    .template-copy b { color:#105848; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -104,41 +109,51 @@ def number(label, key, value, *, step=1.0, min_value=None, max_value=None, help=
 def render_parameters(base: dict) -> dict:
     config = dict(base)
     st.subheader("项目基本信息")
-    left, middle, right = st.columns(3)
-    with left:
+    row1 = st.columns(3, vertical_alignment="bottom")
+    with row1[0]:
         config["project_name"] = st.text_input("项目名称", value=base["project_name"], key="p_project_name")
+    with row1[1]:
         config["project_type"] = st.selectbox("新能源类型", ["风电", "光伏"],
                                                index=0 if base["project_type"] == "风电" else 1,
                                                key="p_project_type")
-    with middle:
+    with row1[2]:
         config["station_power_mw"] = number("新能源装机容量（MW）", "p_station", base["station_power_mw"],
                                              step=1.0, min_value=0.1)
+
+    row2 = st.columns(3, vertical_alignment="bottom")
+    with row2[0]:
         config["aux_power_mw"] = number("厂用电功率（MW）", "p_aux", base["aux_power_mw"],
                                          step=0.1, min_value=0.0)
-    with right:
+    with row2[1]:
         config["mechanism_ratio_pct"] = number("机制电量/上网电量比（%）", "p_mech", base["mechanism_ratio_pct"],
                                                 step=1.0, min_value=0.0, max_value=100.0)
+    with row2[2]:
         config["capacity_compensation_yuan_per_mw_month"] = number(
             "容量补偿电价（元/MW·月）", "p_capacity_price",
             base["capacity_compensation_yuan_per_mw_month"], step=1000.0, min_value=0.0)
 
     with st.expander("调度与储能参数", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
+        row1 = st.columns(3, vertical_alignment="bottom")
+        with row1[0]:
             config["soc_min_pct"] = number("SOC下限（%）", "p_soc_min", base["soc_min_pct"],
                                             step=1.0, min_value=0.0, max_value=99.0)
+        with row1[1]:
             config["soc_max_pct"] = number("SOC上限（%）", "p_soc_max", base["soc_max_pct"],
                                             step=1.0, min_value=1.0, max_value=100.0)
-        with c2:
+        with row1[2]:
             config["efficiency_pct"] = number("储能综合效率（%）", "p_eta", base["efficiency_pct"],
                                                step=1.0, min_value=1.0, max_value=100.0)
+
+        row2 = st.columns(3, vertical_alignment="bottom")
+        with row2[0]:
             config["minimum_spread_yuan_per_mwh"] = number(
                 "最低预测充放价差（元/MWh）", "p_spread", base["minimum_spread_yuan_per_mwh"],
                 step=10.0, min_value=0.0)
-        with c3:
+        with row2[1]:
             config["maximum_charge_price_yuan_per_mwh"] = number(
                 "最高预测充电价格（元/MWh）", "p_charge_price", base["maximum_charge_price_yuan_per_mwh"],
                 step=10.0)
+        with row2[2]:
             config["curtailment_price_yuan_per_mwh"] = number(
                 "限电统计电价阈值（元/MWh）", "p_curt_price", base["curtailment_price_yuan_per_mwh"],
                 step=10.0, help="只用于限电量统计，不是充电资格限制。")
@@ -147,62 +162,72 @@ def render_parameters(base: dict) -> dict:
         st.markdown('<div class="boundary"><b>标准工程边界：</b>站内储能及接入工程；不含新建送出线路和主变扩容。</div>',
                     unsafe_allow_html=True)
         st.caption("固定计入：电池系统、PCS升压一体化系统、站内公用及二次系统、建筑安装工程、基本预备费。")
-        o1, o2, o3 = st.columns(3)
+
+        st.markdown("**项目可选费用**")
+        o1, o2, o3 = st.columns(3, vertical_alignment="top", border=True)
         with o1:
             config["include_land_cost"] = st.checkbox(
                 "计入土地及场地投资", value=bool(base.get("include_land_cost", False)), key="p_include_land")
+            config["land_cost_wan_per_mwh"] = number(
+                "土地及场地（万元/MWh）", "p_land_cost", base["land_cost_wan_per_mwh"],
+                step=0.5, min_value=0.0, disabled=not config["include_land_cost"])
         with o2:
             config["include_predevelopment_cost"] = st.checkbox(
                 "计入前期研究及申报费", value=bool(base.get("include_predevelopment_cost", False)),
                 key="p_include_predev")
+            config["predevelopment_cost_wan"] = number(
+                "前期研究申报费（万元）", "p_predev", base["predevelopment_cost_wan"],
+                step=10.0, min_value=0.0, disabled=not config["include_predevelopment_cost"])
         with o3:
             config["include_engineering_cost"] = st.checkbox(
                 "计入管理、设计及监理费", value=bool(base.get("include_engineering_cost", False)),
                 key="p_include_engineering")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
+            config["engineering_rate_pct"] = number(
+                "管理设计监理费率（%）", "p_engineering", base["engineering_rate_pct"],
+                step=0.1, min_value=0.0, disabled=not config["include_engineering_cost"])
+
+        st.markdown("**固定计入费用**")
+        row1 = st.columns(3, vertical_alignment="bottom")
+        with row1[0]:
             config["battery_cost_wan_per_mwh"] = number(
                 "电池系统（万元/MWh）", "p_battery_cost", base["battery_cost_wan_per_mwh"],
                 step=1.0, min_value=0.0,
                 help="包含电芯/电池簇、BMS、热管理、电池舱及舱内消防等。")
-            config["land_cost_wan_per_mwh"] = number(
-                "土地及场地（万元/MWh）", "p_land_cost", base["land_cost_wan_per_mwh"],
-                step=0.5, min_value=0.0, disabled=not config["include_land_cost"])
-        with c2:
+        with row1[1]:
             config["pcs_cost_wan_per_mw"] = number(
                 "PCS升压一体化系统（万元/MW）", "p_pcs_cost", base["pcs_cost_wan_per_mw"],
                 step=1.0, min_value=0.0,
                 help="包含PCS、升压变压器及配套开关设备。")
+        with row1[2]:
             config["station_equipment_cost_wan_per_mw"] = number(
                 "站内公用及二次系统（万元/MW）", "p_station_cost",
                 base["station_equipment_cost_wan_per_mw"], step=1.0, min_value=0.0,
                 help="包含EMS/AGC/AVC、通信、计量、保护、站级消防、交直流电源及线缆等；不重复计取PCS包内设备。")
-        with c3:
+
+        row2 = st.columns(4, vertical_alignment="bottom")
+        with row2[0]:
             config["installation_rate_pct"] = number(
                 "建筑安装费率（%）", "p_install", base["installation_rate_pct"], step=0.1, min_value=0.0)
-            config["engineering_rate_pct"] = number(
-                "管理设计监理费率（%）", "p_engineering", base["engineering_rate_pct"],
-                step=0.1, min_value=0.0, disabled=not config["include_engineering_cost"])
-        with c4:
-            config["predevelopment_cost_wan"] = number(
-                "前期研究申报费（万元）", "p_predev", base["predevelopment_cost_wan"],
-                step=10.0, min_value=0.0, disabled=not config["include_predevelopment_cost"])
+        with row2[1]:
             config["contingency_rate_pct"] = number(
                 "基本预备费率（%）", "p_contingency", base["contingency_rate_pct"], step=0.1, min_value=0.0)
-        c5, c6 = st.columns(2)
-        with c5:
+        with row2[2]:
             config["battery_unit_mwh"] = number(
                 "电池舱单体容量（MWh/舱）", "p_battery_unit", base["battery_unit_mwh"], step=0.5, min_value=0.1)
-        with c6:
+        with row2[3]:
             config["pcs_unit_mw"] = number(
                 "PCS单套功率（MW/套）", "p_pcs_unit", base["pcs_unit_mw"], step=0.5, min_value=0.1)
 
-        st.markdown("**2小时储能造价快速校核**")
-        check_power = number("校核功率（MW）", "p_cost_check_power", 10.0,
-                             step=1.0, min_value=0.1,
-                             help="按该功率和2小时容量连续估算；固定费用会随校核规模摊薄。")
+        benchmark_header, benchmark_input = st.columns([3, 1], vertical_alignment="bottom")
+        with benchmark_header:
+            st.markdown("**2小时储能造价快速校核**")
+            st.caption("按两小时配置即时检查当前造价参数是否处于合理水平。")
+        with benchmark_input:
+            check_power = number("校核功率（MW）", "p_cost_check_power", 10.0,
+                                 step=1.0, min_value=0.1,
+                                 help="按该功率和2小时容量连续估算；固定费用会随校核规模摊薄。")
         benchmark = cost_benchmark(config, check_power, 2.0)
-        b1, b2, b3, b4 = st.columns(4)
+        b1, b2, b3, b4 = st.columns(4, vertical_alignment="top")
         b1.metric("校核配置", f"{check_power:g}MW / {benchmark['energy_mwh']:g}MWh")
         b2.metric("估算总投资", f"{benchmark['total_wan']:,.1f}万元")
         b3.metric("功率单位造价", f"{benchmark['yuan_per_w']:.3f}元/W")
@@ -210,28 +235,37 @@ def render_parameters(base: dict) -> dict:
         st.caption("校核采用连续造价，不执行电池舱和PCS套数向上取整；用于快速判断当前输入造价水平。")
 
     with st.expander("财务参数", expanded=False):
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
+        row1 = st.columns(4, vertical_alignment="bottom")
+        with row1[0]:
             config["project_years"] = int(number("项目评价期（年）", "p_years", int(base["project_years"]),
                                                   step=1, min_value=1, max_value=40))
+        with row1[1]:
             config["loan_term_years"] = int(number("首次贷款期限（年）", "p_loan_term", int(base["loan_term_years"]),
                                                     step=1, min_value=1, max_value=40))
-        with c2:
+        with row1[2]:
             config["replacement_loan_term_years"] = int(number(
                 "更换电池贷款期限（年）", "p_rep_loan", int(base["replacement_loan_term_years"]),
                 step=1, min_value=1, max_value=20))
+        with row1[3]:
             config["equity_ratio_pct"] = number(
                 "资本金比例（%）", "p_equity", base["equity_ratio_pct"], step=1.0, min_value=0.0, max_value=100.0)
-        with c3:
+
+        row2 = st.columns(4, vertical_alignment="bottom")
+        with row2[0]:
             config["loan_rate_pct"] = number(
                 "贷款利率（%）", "p_loan_rate", base["loan_rate_pct"], step=0.1, min_value=0.0)
+        with row2[1]:
             config["equity_discount_rate_pct"] = number(
                 "资本金折现率（%）", "p_equity_rate", base["equity_discount_rate_pct"], step=0.5, min_value=0.0)
-        with c4:
+        with row2[2]:
             config["battery_degradation_pct"] = number(
                 "电池年衰减率（%）", "p_degr", base["battery_degradation_pct"], step=0.1, min_value=0.0)
+        with row2[3]:
             config["om_ratio_pct"] = number(
                 "年生产费用/初始投资（%）", "p_om", base["om_ratio_pct"], step=0.1, min_value=0.0)
+
+        row3 = st.columns(4, vertical_alignment="bottom")
+        with row3[0]:
             config["income_tax_pct"] = number(
                 "所得税率（%）", "p_tax", base["income_tax_pct"], step=1.0, min_value=0.0, max_value=100.0)
 
@@ -284,15 +318,21 @@ tab_input, tab_grid, tab_report = st.tabs(["① 数据与参数", "② 全网格
 
 with tab_input:
     st.subheader("上传全年生产与市场时序")
-    left, right = st.columns([2, 1])
-    with left:
-        upload = st.file_uploader(
-            "上传CSV或XLSX；XLSX优先读取“时序数据”工作表",
-            type=["csv", "xlsx", "xlsm"], key="timeseries_upload")
-    with right:
-        st.download_button("下载全年时序CSV模板", upload_template_csv(),
-                           file_name="全年生产与市场时序模板.csv", mime="text/csv",
-                           width="stretch")
+    with st.container(border=True):
+        template_copy, template_action = st.columns([3, 1], vertical_alignment="center")
+        with template_copy:
+            st.markdown(
+                '<div class="template-copy"><b>第一步：下载标准模板</b><br>'
+                '仅在模板中填写全年生产和市场时序数据，其他项目参数在本页录入。</div>',
+                unsafe_allow_html=True,
+            )
+        with template_action:
+            st.download_button("下载全年时序CSV模板", upload_template_csv(),
+                               file_name="全年生产与市场时序模板.csv", mime="text/csv",
+                               width="stretch")
+    upload = st.file_uploader(
+        "第二步：上传已填写的CSV或XLSX文件（XLSX优先读取“时序数据”工作表）",
+        type=["csv", "xlsx", "xlsm"], key="timeseries_upload")
     timeseries = None
     upload_bytes = b""
     if upload is not None:

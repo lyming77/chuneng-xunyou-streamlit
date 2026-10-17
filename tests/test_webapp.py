@@ -10,7 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from webapp.model_service import (
+    DEFAULT_COEF,
+    DEFAULT_ZONE_TEXT,
     best_valid_row,
+    build_zones,
     build_model_frame,
     cost_benchmark,
     cost_params,
@@ -22,6 +25,7 @@ from webapp.model_service import (
     schedule_excel_bytes,
 )
 from webapp.report_builder import build_report_bytes
+from 读取收资表格 import zone_of
 
 
 class WebAppTests(unittest.TestCase):
@@ -112,6 +116,17 @@ class WebAppTests(unittest.TestCase):
         benchmark = cost_benchmark(self.config, power_mw=10.0, hours=2.0)
         self.assertGreater(benchmark["total_wan"], 0.0)
         self.assertAlmostEqual(benchmark["yuan_per_w"], benchmark["yuan_per_wh"] * 2.0)
+
+    def test_new_shandong_tou_periods_are_the_defaults(self):
+        zones = build_zones(DEFAULT_ZONE_TEXT)
+        self.assertEqual(zone_of(zones, 3, 8 * 4), "低谷")
+        self.assertEqual(zone_of(zones, 3, 10 * 4), "深谷")
+        self.assertEqual(zone_of(zones, 6, 22 * 4), "高峰")
+        self.assertEqual(zone_of(zones, 7, 10 * 4), "平段")
+        self.assertEqual(zone_of(zones, 10, 19 * 4), "尖峰")
+        self.assertEqual(zone_of(zones, 10, 21 * 4), "高峰")
+        self.assertEqual(DEFAULT_COEF,
+                         {"尖峰": 2.0, "高峰": 1.7, "平段": 1.0, "低谷": 0.3, "深谷": 0.1})
 
 
 if __name__ == "__main__":

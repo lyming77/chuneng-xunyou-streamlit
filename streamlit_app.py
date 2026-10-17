@@ -276,6 +276,10 @@ def render_parameters(base: dict) -> dict:
                 "所得税率（%）", "p_tax", base["income_tax_pct"], step=1.0, min_value=0.0, max_value=100.0)
 
     with st.expander("工商业分时电价", expanded=False):
+        st.caption(
+            "默认采用山东省自2026年10月1日起执行的工商业分时电价时段；"
+            "高峰、低谷、尖峰和深谷浮动比例分别为+70%、-70%、+100%和-90%。"
+        )
         flat_default = pd.DataFrame({"月份": list(range(1, 13)),
                                      "平段电价（元/MWh）": [base["flat_prices"][m] for m in range(1, 13)]})
         flat_edited = st.data_editor(

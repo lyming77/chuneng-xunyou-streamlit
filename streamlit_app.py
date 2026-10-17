@@ -45,9 +45,20 @@ st.markdown(
     .hero { background:#105848; color:white; border-radius:18px; padding:28px 34px; margin-bottom:16px; }
     .hero h1 { margin:0 0 6px; font-size:2.15rem; letter-spacing:.03em; }
     .hero p { margin:0; color:#dcebe4; }
-    .stepbar { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:8px 0 18px; }
-    .step { background:white; border:1px solid #dedcd2; border-radius:12px; padding:12px 14px; }
-    .step b { color:#105848; }
+    .workflow-note { background:#fff8e6; border:1px solid #ead9aa; border-radius:10px;
+                     padding:10px 14px; margin:4px 0 12px; }
+    .workflow-note b { color:#105848; }
+    div[role="tablist"] { display:flex; gap:10px; }
+    div[data-testid="stTab"] {
+        flex:1 1 0; height:60px; justify-content:center; white-space:normal;
+        background:white; border:1px solid #d8d5ca; border-radius:12px;
+        color:#105848; font-size:1rem; font-weight:700;
+    }
+    div[data-testid="stTab"] p { color:inherit; font-weight:700; }
+    div[data-testid="stTab"][aria-selected="true"] {
+        background:#105848; border-color:#105848; color:white;
+    }
+    div[data-testid="stTab"] .react-aria-SelectionIndicator { display:none; }
     [data-testid="stMetric"] { background:white; border:1px solid #dedcd2; padding:14px; border-radius:12px; }
     div[data-testid="stDataFrame"] { border:1px solid #dedcd2; border-radius:10px; overflow:hidden; }
     .boundary { background:#fff8e6; border-left:4px solid #e8ad3c; padding:10px 14px; border-radius:6px; }
@@ -66,11 +77,6 @@ st.markdown(
     <div class="hero">
       <h1>新能源配储寻优 · 云端测算平台</h1>
       <p>方案A｜全年15分钟数据｜全口径工程造价｜全网格容量比较｜选定方案报告</p>
-    </div>
-    <div class="stepbar">
-      <div class="step"><b>01 数据与参数</b><br>上传全年时序，填写项目条件</div>
-      <div class="step"><b>02 全网格测算</b><br>比较功率、时长、收益和资本金IRR</div>
-      <div class="step"><b>03 选定方案报告</b><br>重新调度并下载明细和投资分析报告</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -314,7 +320,16 @@ with st.sidebar:
     st.write("- 全网格采用连续造价估算")
 
 
-tab_input, tab_grid, tab_report = st.tabs(["① 数据与参数", "② 全网格结果", "③ 选定方案与报告"])
+st.markdown(
+    '<div class="workflow-note"><b>操作顺序：</b>先在①上传数据并保存参数；'
+    '再点击②运行全网格测算；测算完成后点击③选择配置并下载结果。</div>',
+    unsafe_allow_html=True,
+)
+tab_input, tab_grid, tab_report = st.tabs([
+    "① 上传数据并保存参数",
+    "② 运行全网格测算",
+    "③ 选定方案并下载报告",
+])
 
 with tab_input:
     st.subheader("上传全年生产与市场时序")
@@ -376,26 +391,29 @@ with tab_input:
                     st.session_state.detail_result = None
                     st.session_state.report_bytes = None
                     st.session_state.schedule_bytes = None
-                st.success("已保存。请进入第二步运行全网格测算。")
+                st.success("第一步已完成。请点击页面上方“② 运行全网格测算”进入下一步。")
             except Exception as exc:
                 st.error(f"参数校验失败：{exc}")
 
 with tab_grid:
     if st.session_state.saved_signature is None:
-        st.info("请先在第一步上传全年数据并保存参数。")
+        st.info("第二步尚未解锁：请先点击上方“① 上传数据并保存参数”，完成上传和保存。")
     else:
         config = st.session_state.config
         station_power = float(config["station_power_mw"])
         default_ratio = 50.0 if config["project_type"] == "光伏" else 30.0
         st.subheader("设置全网格范围")
-        c1, c2 = st.columns(2)
+        c1, c2 = st.columns([1, 2], vertical_alignment="bottom")
         with c1:
             maximum_ratio = st.number_input("储能功率上限/新能源装机（%）", min_value=1.0,
                                             max_value=100.0, value=default_ratio, step=1.0,
                                             key="grid_ratio")
         with c2:
-            durations = st.multiselect("持续时长H（小时）", [2, 4, 6, 8, 10],
-                                       default=[2, 4, 6, 8, 10], key="grid_hours")
+            durations = st.pills(
+                "持续时长H（小时）", [2, 4, 6, 8, 10], selection_mode="multi",
+                default=[2, 4, 6, 8, 10], key="grid_hours",
+                format_func=lambda value: f"{value}小时", width="stretch", wrap=False,
+            )
         powers = make_power_grid(station_power, config["project_type"], maximum_ratio)
         st.caption("功率网格：1—5MW按1MW递增，10MW以上按5MW递增。"
                    f"当前共{len(powers)}个功率点、{len(durations)}个时长点、"
@@ -436,7 +454,7 @@ with tab_grid:
             status.empty()
             progress_bar.empty()
             partial_table.empty()
-            st.success("全网格测算完成。")
+            st.success("第二步已完成。请点击页面上方“③ 选定方案并下载报告”进入下一步。")
 
         grid = st.session_state.grid_result
         if grid is not None:
@@ -497,7 +515,7 @@ with tab_grid:
 with tab_report:
     grid = st.session_state.grid_result
     if grid is None:
-        st.info("请先完成第二步全网格测算。")
+        st.info("第三步尚未解锁：请先点击上方“② 运行全网格测算”，完成容量组合计算。")
     else:
         success = grid[grid["error"].fillna("").eq("")].copy() if "error" in grid else grid.copy()
         if success.empty:

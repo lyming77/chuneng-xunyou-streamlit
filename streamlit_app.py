@@ -324,6 +324,44 @@ with st.sidebar:
     st.write("- 全网格采用连续造价估算")
 
 
+with st.expander("储能调度逻辑（方案A）", expanded=False):
+    dispatch_config = st.session_state.get("config", defaults)
+    dispatch_spread = float(st.session_state.get(
+        "p_spread", dispatch_config["minimum_spread_yuan_per_mwh"]))
+    dispatch_charge_price = float(st.session_state.get(
+        "p_charge_price", dispatch_config["maximum_charge_price_yuan_per_mwh"]))
+    dispatch_soc_min = float(st.session_state.get(
+        "p_soc_min", dispatch_config["soc_min_pct"]))
+    dispatch_soc_max = float(st.session_state.get(
+        "p_soc_max", dispatch_config["soc_max_pct"]))
+    dispatch_efficiency = float(st.session_state.get(
+        "p_eta", dispatch_config["efficiency_pct"]))
+    dispatch_curtailment_price = float(st.session_state.get(
+        "p_curt_price", dispatch_config["curtailment_price_yuan_per_mwh"]))
+    st.markdown("**日前排计划 → 运行日按实际修正 → 按实际执行量结算收益**")
+    st.markdown(f"""
+**1. 日前：比较全天96个点，形成充放电计划**
+
+使用预测电价和预测发电功率，在功率、容量及电量平衡约束下，统一比较全天可实现的充放电收益，安排较低价格充电、较高价值放电。充电同时考虑发电电量和免费限电电量，放电同时考虑市场售电和抵厂用电。
+
+- **发电充电**：预测充电价格不高于 **{dispatch_charge_price:g}元/MWh**；每笔充电必须与当天后续放电配对，对应预测放电价值减去预测充电价格不低于 **{dispatch_spread:g}元/MWh**。价差门槛用于判断充放电资格，充电成本按预测电价计算。抵厂用电按对应分时电价衡量价值。
+- **免费电量**：按0元/MWh计成本，预测放电价值至少达到 **{dispatch_spread:g}元/MWh** 才能放电。跨日剩余电量继续保留原来的最低预测放电价格。
+
+**2. 运行日：优先执行日前计划，按实际能力修正**
+
+- 实际发电不足时，计划充电只能按实际可实现功率执行。少充的发电充电电量形成当天缺口；后续利用“可用功率－实际发电功率”的正偏差免费弥补，只补已有缺口，不挤占本时点计划，计划放电时不补充电，未补缺口当天清零。
+- 补充电不受限电统计电价阈值约束。计划限电充电的可用量，当前按实时电价不高于 **{dispatch_curtailment_price:g}元/MWh** 时的“可用功率－实际发电功率”正偏差计算。
+- 按计划放电时，同时核对实际库存、电量来源对应的价格门槛及并网余量。电量不足就相应少放，市场上网放电还受“新能源实际功率＋储能上网放电功率不超过场站装机”限制。
+
+**3. 全过程约束与收益结算**
+
+同一15分钟点禁止同时充放电，充、放电功率均不超过储能额定功率；荷电状态保持在 **{dispatch_soc_min:g}%～{dispatch_soc_max:g}%**，综合效率按 **{dispatch_efficiency:g}%** 计。缺口当天清零，实际剩余库存可跨日，电量来源及价格门槛继续保留。
+
+市场售电收入和发电充电成本按实时市场电价及实际执行量结算，抵厂用电按分时电价计收益，并另行计算容量补偿。以上数值随第一步填写的参数变化，测算采用保存后的参数。
+""")
+    st.caption("当前测算使用上传数据计算的限电量作为日前免费充电可用量；预测电价用于排计划，实时电价用于结算。")
+
+
 st.markdown(
     '<div class="workflow-note"><b>操作顺序：</b>先在①上传数据并保存参数；'
     '再点击②运行全网格测算；测算完成后点击③选择配置并下载结果。</div>',

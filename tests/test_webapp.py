@@ -231,6 +231,9 @@ class WebAppTests(unittest.TestCase):
         available = document.sections[0].page_width - document.sections[0].left_margin - document.sections[0].right_margin
         for table in document.tables:
             self.assertLessEqual(sum(column.width for column in table.columns), available + 10000)
+        from docx.oxml.ns import qn
+        children = list(document._element.body)
+        self.assertFalse(any(a.tag == b.tag == qn('w:tbl') for a,b in zip(children,children[1:])))
 
     def test_report_sensitivity_preserves_user_costs_and_financing(self):
         config = {**self.config, "battery_cost_wan_per_mwh": 45.0,

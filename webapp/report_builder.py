@@ -106,7 +106,16 @@ def _set_cell(cell, text, bold=False, align=WD_ALIGN_PARAGRAPH.LEFT):
     properties.append(margins)
 
 
-def _add_table(document, headers, rows, widths=None):
+def _add_table(document, headers, rows, widths=None, aligns=None):
+    body = document._element.body
+    if len(body) > 1 and body[-2].tag == qn("w:tbl"):
+        # Word会合并紧邻的同样式表格；用无可见内容的小段落隔开，保留各自重复表头。
+        spacer = document.add_paragraph()
+        spacer.paragraph_format.space_before = Pt(0)
+        spacer.paragraph_format.space_after = Pt(0)
+        spacer.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+        spacer.paragraph_format.line_spacing = Pt(1)
+        _set_font(spacer.add_run(), size=1)
     table = document.add_table(rows=1, cols=len(headers))
     table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -122,7 +131,8 @@ def _add_table(document, headers, rows, widths=None):
         table.rows[-1]._tr.get_or_add_trPr().append(cant_split)
         for index, value in enumerate(row):
             _set_cell(cells[index], value,
-                      align=WD_ALIGN_PARAGRAPH.LEFT if index == 0 else WD_ALIGN_PARAGRAPH.RIGHT)
+                      align=aligns[index] if aligns else (
+                          WD_ALIGN_PARAGRAPH.LEFT if index == 0 else WD_ALIGN_PARAGRAPH.RIGHT))
     if widths:
         section = document.sections[-1]
         available_width = (section.page_width - section.left_margin - section.right_margin) / Cm(1)
@@ -503,7 +513,7 @@ def build_report_bytes(config: dict, grid: pd.DataFrame, detail: dict) -> bytes:
         ["造价与融资","采用本次输入值及勾选费用；未选项目不计入，不含新建送出线路、主变扩容及建设期资金成本。"],
         ["税费","计入输入的所得税和生产费用；未单独完整测算增值税、附加税、保险及税收优惠。"],
         ["电池性能","按固定效率、线性年衰减和设定更换年测算，未逐年重新求解衰减后的调度。"],
-    ], widths=[3.3,11.1])
+    ], widths=[3.3,11.1], aligns=[WD_ALIGN_PARAGRAPH.LEFT, WD_ALIGN_PARAGRAPH.LEFT])
     _add_text(document,
         "本报告使用用户上传的时序数据及网页填写条件，不用单一年份回测承诺未来收益。"
         "工程造价属于容量组合测算口径，具体采购报价、接入条件和合同结算差异应另行核对。"

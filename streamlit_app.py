@@ -389,10 +389,10 @@ with tab_input:
                 unsafe_allow_html=True,
             )
         with template_action:
-            st.download_button("下载全年时序CSV模板", upload_template_csv(),
-                               file_name="全年生产与市场时序模板.csv", mime="text/csv",
+            st.download_button("下载全年时序CSV模板（可用功率版）", upload_template_csv(),
+                               file_name="全年生产与市场时序模板_可用功率版_20261031.csv", mime="text/csv",
                                width="stretch")
-    st.caption("可用功率须考虑设备检修、故障等无法出力的影响；理论功率和超短期预测功率不能直接视为真实可用功率。")
+    st.caption("模板版本：2026-10-31 可用功率版，第4列为“可用功率(MW)”。可用功率须考虑设备检修、故障等无法出力的影响，与理论功率、超短期预测功率分开填报。")
     upload = st.file_uploader(
         "第二步：上传已填写的CSV或XLSX文件（XLSX优先读取“时序数据”工作表）",
         type=["csv", "xlsx", "xlsm"], key="timeseries_upload")

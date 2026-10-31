@@ -18,7 +18,7 @@ import multiprocessing as mp
 sys.path.insert(0, "脚本")
 import 寻优 as M
 from 方案B_滚动MPC import solve_mpc
-from 读取收资表格 import read_kv, parse_ranges, read_tou_table, zone_of, build_tou, MONTH_GROUP, COEF_DEFAULT
+from 读取收资表格 import read_kv, parse_ranges, read_tou_table, zone_of, build_tou, MONTH_GROUP, COEF_DEFAULT, prepare_available_power
 
 SRC_DIR = "收资表格 2"
 OUT_ROOT = "结果"
@@ -65,7 +65,7 @@ def _worker(ph):
 
 
 def fill_power(ts):
-    """交叉字段补全三个功率字段,返回 (ts, 填充统计)。"""
+    """交叉补全实际/超短期/日前功率;可用功率独立读取,不混用理论功率。"""
     c_act, c_avail, c_fcst = "实际发电功率(MW)", "超短期预测功率(MW)", "预测发电功率(日前,MW)"
     ts = ts.copy()
     stats = {c: int(ts[c].isna().sum()) for c in (c_act, c_avail, c_fcst)}
@@ -75,7 +75,7 @@ def fill_power(ts):
     ts[c_fcst] = ts[c_fcst].fillna(ts[c_avail]).fillna(ts[c_act])
     # 实际发电功率为毛发电(≥0),负值毛刺截到 0
     ts[c_act] = ts[c_act].clip(lower=0.0)
-    return ts, stats
+    return prepare_available_power(ts), stats
 
 
 def is_sharp_of(zones, month, hour):
@@ -84,9 +84,10 @@ def is_sharp_of(zones, month, hour):
 
 def build_df(ts, params):
     """构建与 寻优.load_data 同结构的模型 df。"""
+    ts = prepare_available_power(ts)
     t = pd.to_datetime(ts["时间戳"])
     df = pd.DataFrame({"time": t})
-    df["avail"] = ts["超短期预测功率(MW)"].astype(float)
+    df["avail"] = ts["可用功率(MW)"].astype(float)
     df["act_mw"] = ts["实际发电功率(MW)"].astype(float)
     df["forecast_mw"] = ts["预测发电功率(日前,MW)"].astype(float)
     df["mkt"] = ts["实时市场价格(元/MWh)"].astype(float)
@@ -102,6 +103,8 @@ def build_df(ts, params):
     avail, act, mkt = df["avail"].values, df["act_mw"].values, df["mkt"].values
     df["curt"] = np.where(mkt <= M.CURT_PRICE, np.maximum(avail - act, 0.0), 0.0)
     df["grid_need"] = np.maximum(0, p_aux - act)
+    df.attrs["available_power_source"] = ts.attrs["available_power_source"]
+    df.attrs["available_power_is_estimate"] = ts.attrs["available_power_is_estimate"]
     return df
 
 
@@ -168,6 +171,7 @@ def report(res, df, name, station, tech, p_station, n_year, fill_stats, p_range)
         "",
         f"> **场站**:{name}({st_type} · 装机 {p_station} MW · 厂用电 {station['厂用电功率']} MW · 项目年限 {n_year} 年)",
         f"> **数据**:{df['time'].min().date()} ~ {df['time'].max().date()}(全年 {len(df)} 点,15min)",
+        f"> **可用功率来源**:{df.attrs['available_power_source']}",
         f"> **网格**:P∈[{p_range[0]},{p_range[-1]}] MW(1~5@1MW、>5@5MW,上限=装机×{RATIO_BY_TYPE[st_type]:.0%})× H∈{{2,4,6,8,10}},共 {len(p_range)*len(H_SET)} 组合",
         f"> **口径**:{n_year} 年财务口径({'' if n_year > M.DEP_BATT else '老项目,不换电池;'}弃电 mkt≤−80 · 付费充电逐笔预测价差≥120 · 免费电量预测放电价值≥120 · 跨日库存保留原门槛)",
         "",
@@ -224,7 +228,7 @@ def process(name):
             "fi_irr", "fi_npv", "eq_irr", "eq_npv"]
     res[cols].to_csv(os.path.join(out_dir, "方案A_全网格.csv"), index=False, encoding="utf-8-sig")
     # 补全后时序(供审计)
-    ts[["时间戳", "实际发电功率(MW)", "超短期预测功率(MW)", "预测发电功率(日前,MW)",
+    ts[["时间戳", "实际发电功率(MW)", "超短期预测功率(MW)", "可用功率(MW)", "预测发电功率(日前,MW)",
         "实时市场价格(元/MWh)", "预测价格(元/MWh)"]].to_csv(
         os.path.join(out_dir, "时序_补全后.csv"), index=False, encoding="utf-8-sig")
 

@@ -29,16 +29,19 @@ REQUIRED_COLUMNS = [
     "时间戳",
     "实际发电功率(MW)",
     "超短期预测功率(MW)",
+    "可用功率(MW)",
     "预测发电功率(日前,MW)",
     "实时市场价格(元/MWh)",
     "预测价格(元/MWh)",
 ]
-ALL_COLUMNS = REQUIRED_COLUMNS[:3] + ["理论功率(MW)"] + REQUIRED_COLUMNS[3:]
+ALL_COLUMNS = REQUIRED_COLUMNS.copy()
 ALIASES = {
     "时间": "时间戳",
     "实际发电(MW)": "实际发电功率(MW)",
     "实际功率(MW)": "实际发电功率(MW)",
-    "可用功率(MW)": "超短期预测功率(MW)",
+    "可用发电功率(MW)": "可用功率(MW)",
+    "可用功率(兆瓦)": "可用功率(MW)",
+    "可用发电功率(兆瓦)": "可用功率(MW)",
     "日前预测功率(MW)": "预测发电功率(日前,MW)",
     "预测发电功率(MW)": "预测发电功率(日前,MW)",
     "实时电价(元/MWh)": "实时市场价格(元/MWh)",
@@ -106,7 +109,7 @@ def default_config() -> dict:
 
 def config_signature(config: dict, data_bytes: bytes) -> str:
     payload = json.dumps(config, ensure_ascii=False, sort_keys=True, default=float).encode("utf-8")
-    return hashlib.sha256(data_bytes + payload).hexdigest()
+    return hashlib.sha256(b"available-power-v1\0" + data_bytes + payload).hexdigest()
 
 
 def upload_template_csv(start: str = "2026-01-01") -> bytes:
@@ -143,13 +146,15 @@ def read_uploaded_timeseries(data: bytes, filename: str) -> pd.DataFrame:
 def normalize_timeseries(raw: pd.DataFrame, require_full_year: bool = True) -> pd.DataFrame:
     frame = raw.copy()
     frame.columns = [str(column).strip() for column in frame.columns]
-    frame = frame.rename(columns={key: value for key, value in ALIASES.items() if key in frame.columns})
-    missing = [column for column in REQUIRED_COLUMNS if column not in frame.columns]
+    for alias, column in ALIASES.items():
+        if alias in frame.columns and column not in frame.columns:
+            frame = frame.rename(columns={alias: column})
+    # 旧表没有独立可用功率列时,由主模型显式标注为超短期估算;理论功率不转用。
+    missing = [column for column in REQUIRED_COLUMNS
+               if column != "可用功率(MW)" and column not in frame.columns]
     if missing:
         raise ValueError("上传文件缺少字段：" + "、".join(missing))
-    if "理论功率(MW)" not in frame.columns:
-        frame["理论功率(MW)"] = np.nan
-    frame = frame[ALL_COLUMNS].copy()
+    frame = frame[[column for column in ALL_COLUMNS if column in frame.columns]].copy()
     frame["时间戳"] = pd.to_datetime(frame["时间戳"], errors="coerce")
     if frame["时间戳"].isna().any():
         raise ValueError(f"时间戳存在{int(frame['时间戳'].isna().sum())}个无法识别的值")
@@ -167,7 +172,7 @@ def normalize_timeseries(raw: pd.DataFrame, require_full_year: bool = True) -> p
         counts = frame.groupby(frame["时间戳"].dt.date).size()
         if not counts.eq(96).all():
             raise ValueError("部分日期不是96个15分钟点")
-    numeric_columns = ALL_COLUMNS[1:]
+    numeric_columns = [column for column in ALL_COLUMNS[1:] if column in frame.columns]
     for column in numeric_columns:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     price_columns = ["实时市场价格(元/MWh)", "预测价格(元/MWh)"]
@@ -187,7 +192,7 @@ def normalize_timeseries(raw: pd.DataFrame, require_full_year: bool = True) -> p
     for column in power_columns:
         frame[column] = frame[column].clip(lower=0.0)
     frame.attrs["power_fill_stats"] = fill_stats
-    return frame
+    return frame[ALL_COLUMNS]
 
 
 def parse_ranges(value: str) -> list[list[float]]:
@@ -446,6 +451,7 @@ def build_detail(frame: pd.DataFrame, config: dict, row: dict, detail: dict) -> 
         "project_name": config["project_name"],
         "project_type": config["project_type"],
         "station_power_mw": float(config["station_power_mw"]),
+        "available_power_source": frame.attrs.get("available_power_source", "上传的可用功率"),
         "points": len(frame),
         "start": pd.Timestamp(frame["time"].iloc[0]),
         "end": pd.Timestamp(frame["time"].iloc[-1]),
@@ -511,6 +517,7 @@ def schedule_excel_bytes(detail: dict) -> bytes:
     metrics = detail["metrics"]
     summary = pd.DataFrame([
         ["项目", metrics["project_name"]],
+        ["可用功率来源", metrics["available_power_source"]],
         ["储能功率(MW)", metrics["P"]],
         ["储能容量(MWh)", metrics["E"]],
         ["全年充电量(MWh)", metrics["charge_mwh"]],

@@ -23,7 +23,7 @@ P_STATION = 480.0    # 阜山龙源光伏电站装机容量 MW(与收资表格�
 STATION_TYPE = "光伏"   # 场站类型:光伏/风电,决定全网格 P 上限比例(见 §1.3 工作流程)
 RATIO_BY_TYPE = {"光伏": 0.5, "风电": 0.3}   # 配储功率上限 = 装机 × 比例
 P_MAX = P_STATION * RATIO_BY_TYPE[STATION_TYPE]   # 全网格 P 上限 MW(光伏 480×0.5=240)
-CURT_PRICE = -80.0   # 限电电价阈值(元/MWh):电价 ≤ 该值判为限电,否则 avail−act 视为预测/设备误差
+CURT_PRICE = -80.0   # 限电统计电价阈值(元/MWh):仅在电价不高于该值时统计可用与实际发电的正偏差
 ARB_MIN = 120.0      # 充放价差门槛(元/MWh):方案A在日前模型中逐笔约束预测放电价−预测充电价≥120
 CHG_PRICE_MAX = 250.0  # 充电电价上限(元/MWh):电价高于此值禁发电充电 cg(弃电充电 cc 仅在 mkt≤−80 时发生,天然满足)
 
@@ -131,6 +131,7 @@ def load_data():
     df = df.merge(mp[["time", "price"]].rename(columns={"price": "mkt"}), on="time")
     df = df.merge(fp[["time", "price"]].rename(columns={"price": "mkt_fc"}), on="time")
     df = df.merge(tou[["time", "tou_price"]].rename(columns={"tou_price": "tou"}), on="time")
+    # 原始SCADA的可用发电功率已扣除检修、故障影响;不使用theo_kw理论功率。
     df["avail"] = df["avail_kw"] / 1000.0
     df = df.drop(columns=["avail_kw"])
 
@@ -139,13 +140,15 @@ def load_data():
     df["month"] = df["time"].dt.month
     df["is_sharp"] = [h in SHARP_HOURS[m] for m, h in zip(df["month"], df["hour"])]
 
-    # 限电判断:电价 ≤ CURT_PRICE(深度负价=真限电)→ 弃电=avail−act;否则 avail−act 是预测/设备误差,不算弃电
+    # 限电统计沿用电价阈值;其他时段的正偏差不计入限电量,仍可用于弥补充电缺口。
     avail, act, mkt = df["avail"].values, df["act_mw"].values, df["mkt"].values
     curt = np.where(mkt <= CURT_PRICE, np.maximum(avail - act, 0.0), 0.0)
     df["curt"] = curt
 
     # 下网需求(厂用电扣除自发后仍需下网)
     df["grid_need"] = np.maximum(0, P_AUX - act)
+    df.attrs["available_power_source"] = "SCADA可用发电功率（avail_kw）"
+    df.attrs["available_power_is_estimate"] = False
     return df
 
 

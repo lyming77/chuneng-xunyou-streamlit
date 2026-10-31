@@ -1,5 +1,7 @@
 import sys
+import io
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +25,7 @@ from webapp.model_service import (
     run_configuration,
     run_grid,
     schedule_excel_bytes,
+    upload_template_csv,
 )
 from webapp.report_builder import build_report_bytes
 from 读取收资表格 import zone_of
@@ -37,6 +40,7 @@ class WebAppTests(unittest.TestCase):
             "时间戳": timestamp,
             "实际发电功率(MW)": np.full(n, 2.0),
             "超短期预测功率(MW)": np.full(n, 2.0),
+            "可用功率(MW)": np.full(n, 2.0),
             "预测发电功率(日前,MW)": np.full(n, 2.0),
             "实时市场价格(元/MWh)": price,
             "预测价格(元/MWh)": price,
@@ -89,6 +93,68 @@ class WebAppTests(unittest.TestCase):
                                  "预测发电功率(日前,MW)"]].isna().any().any())
         self.assertEqual(filled.attrs["power_fill_stats"]["实际发电功率(MW)"], 1)
 
+    def test_available_power_is_distinct_from_theoretical_and_forecast_power(self):
+        raw = self.timeseries.copy()
+        raw["实际发电功率(MW)"] = 2.0
+        raw["可用功率(MW)"] = 3.0
+        raw["超短期预测功率(MW)"] = 8.0
+        raw["理论功率(MW)"] = 10.0
+        raw["实时市场价格(元/MWh)"] = -100.0
+        normalized = normalize_timeseries(raw, require_full_year=False)
+        frame = build_model_frame(normalized, self.config)
+        np.testing.assert_allclose(frame["avail"], 3.0)
+        np.testing.assert_allclose(frame["curt"], 1.0)
+        np.testing.assert_allclose(normalized["超短期预测功率(MW)"], 8.0)
+        self.assertFalse(frame.attrs["available_power_is_estimate"])
+
+    def test_legacy_upload_is_explicitly_marked_as_estimated(self):
+        raw = self.timeseries.drop(columns="可用功率(MW)")
+        raw["理论功率(MW)"] = 10.0
+        with self.assertWarnsRegex(UserWarning, "理论功率未被采用"):
+            normalized = normalize_timeseries(raw, require_full_year=False)
+        frame = build_model_frame(normalized, self.config)
+        np.testing.assert_allclose(frame["avail"], 2.0)
+        self.assertTrue(frame.attrs["available_power_is_estimate"])
+        self.assertIn("估算", frame.attrs["available_power_source"])
+
+    def test_incomplete_available_power_is_not_filled_from_other_power(self):
+        for value in (np.nan, np.inf, -1.0, "错误"):
+            with self.subTest(value=value):
+                raw = self.timeseries.copy()
+                raw["可用功率(MW)"] = raw["可用功率(MW)"].astype(object)
+                raw.loc[0, "可用功率(MW)"] = value
+                raw["理论功率(MW)"] = 10.0
+                with self.assertRaisesRegex(ValueError, "可用功率.*请补齐真实可用功率"):
+                    normalize_timeseries(raw, require_full_year=False)
+
+    def test_available_power_alias_does_not_overwrite_short_term_forecast(self):
+        raw = self.timeseries.rename(columns={"可用功率(MW)": "可用发电功率(MW)"})
+        raw["可用发电功率(MW)"] = 3.0
+        normalized = normalize_timeseries(raw, require_full_year=False)
+        np.testing.assert_allclose(normalized["可用功率(MW)"], 3.0)
+        np.testing.assert_allclose(normalized["超短期预测功率(MW)"], 2.0)
+
+    def test_template_requests_available_power_instead_of_theoretical_power(self):
+        columns = pd.read_csv(io.BytesIO(upload_template_csv()), nrows=0).columns
+        self.assertIn("可用功率(MW)", columns)
+        self.assertNotIn("理论功率(MW)", columns)
+
+    def test_supplemental_charge_uses_available_power_not_theoretical_power(self):
+        from 方案B_滚动MPC import solve_mpc
+        plans = [np.zeros(96) for _ in range(4)]
+        plans[1][0] = 4.0  # 首点实际少充1MWh,下一点可免费补缺口。
+        raw = self.timeseries.copy()
+        raw["实际发电功率(MW)"] = 0.0
+        raw["可用功率(MW)"] = 0.0
+        raw.loc[1, "可用功率(MW)"] = 1.0
+        raw["超短期预测功率(MW)"] = 8.0
+        raw["理论功率(MW)"] = 10.0
+        frame = build_model_frame(normalize_timeseries(raw, require_full_year=False), self.config)
+        with patch("方案B_滚动MPC.solve_window_a", return_value=plans):
+            _, _, _, schedule = solve_mpc(4, 4, frame, return_schedule=True, P_STATION=10)
+        self.assertAlmostEqual(schedule["cc"][1], 1.0)
+        self.assertAlmostEqual(schedule["cc"].sum() * 0.25, 0.25)
+
     def test_one_day_configuration_and_downloads(self):
         frame = build_model_frame(self.timeseries, self.config)
         detail = run_configuration(frame, self.config, 1.0, 2)
@@ -98,6 +164,8 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(detail["schedule"]), 96)
         excel = schedule_excel_bytes(detail)
         self.assertTrue(excel.startswith(b"PK"))
+        summary = pd.read_excel(io.BytesIO(excel), sheet_name="全年汇总").set_index("指标")
+        self.assertEqual(summary.loc["可用功率来源", "数值"], "上传的可用功率")
         grid = pd.DataFrame([{**{key: metrics.get(key, np.nan) for key in (
             "P", "H", "E", "annual_cycles", "total_revenue", "capex", "fi_npv", "eq_irr")},
                                   "error": ""}])

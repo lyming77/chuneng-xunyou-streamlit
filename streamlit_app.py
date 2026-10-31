@@ -99,6 +99,7 @@ state_default("schedule_bytes", None)
 
 @st.cache_data(show_spinner=False)
 def cached_read_upload(data: bytes, filename: str) -> pd.DataFrame:
+    """按独立可用功率口径读取,使旧字段映射的缓存失效。"""
     return read_uploaded_timeseries(data, filename)
 
 
@@ -391,6 +392,7 @@ with tab_input:
             st.download_button("下载全年时序CSV模板", upload_template_csv(),
                                file_name="全年生产与市场时序模板.csv", mime="text/csv",
                                width="stretch")
+    st.caption("可用功率须考虑设备检修、故障等无法出力的影响；理论功率和超短期预测功率不能直接视为真实可用功率。")
     upload = st.file_uploader(
         "第二步：上传已填写的CSV或XLSX文件（XLSX优先读取“时序数据”工作表）",
         type=["csv", "xlsx", "xlsm"], key="timeseries_upload")
@@ -412,6 +414,11 @@ with tab_input:
                 st.warning("数据校验通过；功率字段已按主模型交叉补全规则处理：" + detail + "。")
             else:
                 st.success("数据校验通过：时间连续、每天96点、必填字段完整。")
+            if timeseries.attrs.get("available_power_is_estimate", False):
+                st.warning("旧文件缺少独立的可用功率，当前以超短期预测功率估算，理论功率未参与计算。"
+                           "请补充真实可用功率后重新保存和测算；若旧表该列实际记录可用功率，请核实后改列名。")
+            else:
+                st.caption("限电统计和偏差弥补使用上传的可用功率；理论功率不参与计算，超短期预测作为独立字段保留。")
             with st.expander("查看上传数据前96点"):
                 st.dataframe(timeseries.head(96), width="stretch", height=360)
         except Exception as exc:

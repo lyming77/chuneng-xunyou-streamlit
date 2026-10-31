@@ -6,6 +6,8 @@
 输出: 时序 DataFrame + 参数字典 + λ_tou(分时电价),并写 CSV。
 """
 import sys
+import warnings
+import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 
@@ -27,14 +29,41 @@ def read_kv(path, sheet):
 def read_ts(path):
     df = pd.read_excel(path, sheet_name="时序数据")
     df.columns = [c.strip() for c in df.columns]
-    return df
+    return prepare_available_power(df)
+
+
+def prepare_available_power(ts):
+    """独立读取可用功率;旧表仅允许以超短期预测显式估算,不使用理论功率。"""
+    ts = ts.copy()
+    column = "可用功率(MW)"
+    for alias in ("可用发电功率(MW)", "可用功率(兆瓦)", "可用发电功率(兆瓦)"):
+        if column not in ts.columns and alias in ts.columns:
+            ts = ts.rename(columns={alias: column})
+    if column not in ts.columns:
+        if "超短期预测功率(MW)" not in ts.columns:
+            raise ValueError("缺少可用功率(MW)；理论功率不能替代考虑检修、故障后的可用功率。")
+        ts[column] = ts["超短期预测功率(MW)"]
+        ts.attrs["available_power_source"] = "超短期预测功率估算（旧格式兼容）"
+        ts.attrs["available_power_is_estimate"] = True
+        warnings.warn("旧文件未提供可用功率(MW)，暂按超短期预测功率估算；"
+                      "理论功率未被采用。正式测算请补充考虑检修、故障后的可用功率。",
+                      UserWarning, stacklevel=2)
+    power = pd.to_numeric(ts[column], errors="coerce")
+    invalid = power.isna() | ~np.isfinite(power) | (power < 0)
+    if invalid.any():
+        raise ValueError(f"可用功率(MW)存在{int(invalid.sum())}个空值、非数字或负值；"
+                         "请补齐真实可用功率，不使用理论功率或预测值自动填补。")
+    ts[column] = power.astype(float)
+    ts.attrs.setdefault("available_power_source", "上传的可用功率")
+    ts.attrs.setdefault("available_power_is_estimate", False)
+    return ts
 
 
 def check_ts(df):
     assert len(df) == 365 * 96, f"时序数据行数 {len(df)},应为 {365*96}"
     t = pd.to_datetime(df["时间戳"])
     assert (t.diff().dt.total_seconds().iloc[1:] == 900).all(), "时间戳非 15min 连续"
-    req = ["实际发电功率(MW)", "超短期预测功率(MW)", "预测发电功率(日前,MW)",
+    req = ["实际发电功率(MW)", "超短期预测功率(MW)", "可用功率(MW)", "预测发电功率(日前,MW)",
            "实时市场价格(元/MWh)", "预测价格(元/MWh)"]
     for c in req:
         assert df[c].notna().all(), f"必填列「{c}」存在空值"
@@ -125,7 +154,8 @@ if __name__ == "__main__":
     path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
     df, params, tou = main(path)
     out = df.rename(columns={
-        "时间戳": "time", "实际发电功率(MW)": "p_gen", "超短期预测功率(MW)": "p_avail",
+        "时间戳": "time", "实际发电功率(MW)": "p_gen", "超短期预测功率(MW)": "p_short_term",
+        "可用功率(MW)": "p_avail",
         "理论功率(MW)": "p_theo", "预测发电功率(日前,MW)": "p_fcst",
         "实时市场价格(元/MWh)": "mkt_price", "预测价格(元/MWh)": "fcst_price"})
     out.to_csv("15min数据/收资_时序.csv", index=False, encoding="utf-8-sig")

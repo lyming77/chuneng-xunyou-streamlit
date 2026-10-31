@@ -306,6 +306,8 @@ def build_report_bytes(config: dict, grid: pd.DataFrame, detail: dict) -> bytes:
     _add_heading(document, "八、主要测算口径")
     items = [
         "方案A使用日前预测电价和日前预测发电功率形成96点计划，实际执行按实时发电能力修正。",
+        f"可用功率来源：{metrics['available_power_source']}。可用功率考虑设备检修、故障影响，"
+        "与不扣除这些影响的理论功率分开；理论功率不参与限电统计及偏差弥补。",
         f"预测充电价格不高于{config['maximum_charge_price_yuan_per_mwh']:g}元/MWh，"
         f"预测充放价差不低于{config['minimum_spread_yuan_per_mwh']:g}元/MWh。",
         f"SOC运行区间为{config['soc_min_pct']:g}%—{config['soc_max_pct']:g}%，"

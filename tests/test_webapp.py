@@ -168,13 +168,15 @@ class WebAppTests(unittest.TestCase):
             app = AppTest.from_file(str(ROOT / "streamlit_app.py")).run(timeout=30)
             next(w for w in app.number_input if w.label == "新能源装机容量（MW）").set_value(10.0)
             next(w for w in app.button if w.label == "保存数据与参数").click().run(timeout=30)
+            next(w for w in app.multiselect if w.label == "持续时长H（小时）").set_value([4]).run(timeout=30)
         self.assertFalse(app.exception)
         np.testing.assert_allclose(app.session_state["model_frame"]["avail"], 2.0)
         self.assertEqual(len(app.session_state["model_frame"]), 35040)
         labels = {w.label for w in app.number_input}
         self.assertIn("储能功率下限（MW）", labels)
         self.assertIn("储能功率上限（MW）", labels)
-        self.assertTrue(any("第一步已完成" in item.value for item in app.success))
+        self.assertIsNotNone(app.session_state["saved_signature"])
+        self.assertEqual(next(w for w in app.multiselect if w.label == "持续时长H（小时）").value, [4])
 
     def test_supplemental_charge_uses_available_power_not_theoretical_power(self):
         from 方案B_滚动MPC import solve_mpc

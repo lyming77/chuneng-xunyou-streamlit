@@ -485,10 +485,10 @@ with tab_grid:
                                             key="grid_max_power",
                                             help="默认风电为新能源装机的30%，光伏为50%；可按需要调整。")
         with c3:
-            durations = st.pills(
-                "持续时长H（小时）", [2, 4, 6, 8, 10], selection_mode="multi",
+            durations = st.multiselect(
+                "持续时长H（小时）", [2, 4, 6, 8, 10],
                 default=[2, 4, 6, 8, 10], key="grid_hours",
-                format_func=lambda value: f"{value}小时", width="stretch",
+                format_func=lambda value: f"{value}小时",
             )
         if minimum_power > maximum_power:
             powers = []

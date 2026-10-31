@@ -633,6 +633,7 @@ with tab_report:
             c2.metric("首年总收入", f"{selected_row.total_revenue:,.1f}万元")
             c3.metric("全投资NPV", f"{selected_row.fi_npv:,.1f}万元")
             c4.metric("资本金IRR", "—" if not np.isfinite(selected_row.eq_irr) else f"{selected_row.eq_irr:.2f}%")
+            st.caption("报告包含运行指标、分月电量、投资融资、逐年现金流、容量比较及敏感性分析，配有图表和文字说明。")
             if st.button("计算选定配置并生成报告", type="primary", width="stretch"):
                 progress_bar = st.progress(0.0, text="第1/3阶段：计算全年调度")
                 status = st.empty()

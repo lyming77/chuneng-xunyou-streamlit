@@ -27,6 +27,7 @@ from webapp.model_service import (
     normalize_timeseries,
     run_configuration,
     run_grid,
+    report_sensitivity,
     schedule_excel_bytes,
     upload_template_csv,
 )
@@ -217,6 +218,57 @@ class WebAppTests(unittest.TestCase):
                                   "error": ""}])
         report = build_report_bytes(self.config, grid, detail)
         self.assertTrue(report.startswith(b"PK"))
+        from docx import Document
+        document = Document(io.BytesIO(report))
+        text = "\n".join(p.text for p in document.paragraphs)
+        for section in ["融资偿付与现金流", "敏感性分析", "主要不确定性与测算范围",
+                        "限电比例", "等效利用小时", "仅有一个"]:
+            self.assertIn(section, text + "\n".join(c.text for t in document.tables for r in t.rows for c in r.cells))
+        self.assertGreaterEqual(len(document.inline_shapes), 5)
+        self.assertGreaterEqual(len(document.tables), 12)
+        self.assertGreater(len(text), 4000)
+        self.assertNotIn("建议：", text)
+        available = document.sections[0].page_width - document.sections[0].left_margin - document.sections[0].right_margin
+        for table in document.tables:
+            self.assertLessEqual(sum(column.width for column in table.columns), available + 10000)
+
+    def test_report_sensitivity_preserves_user_costs_and_financing(self):
+        config = {**self.config, "battery_cost_wan_per_mwh": 45.0,
+                  "pcs_cost_wan_per_mw": 25.0, "station_equipment_cost_wan_per_mw": 15.0,
+                  "project_years": 10, "loan_term_years": 7, "equity_ratio_pct": 40.0,
+                  "loan_rate_pct": 4.0, "income_tax_pct": 20.0, "om_ratio_pct": 1.2}
+        frame = build_model_frame(self.timeseries, config)
+        detail = run_configuration(frame, config, 2.0, 4)
+        from webapp import model_service
+        before = model_service.M.LOAN_RATE
+        cases = report_sensitivity(config, detail['metrics'])
+        base = cases.iloc[0]
+        for column, key in [('全投资NPV','fi_npv'), ('资本金NPV','eq_npv'), ('资本金IRR','eq_irr')]:
+            np.testing.assert_allclose(base[column], detail['metrics'][key], equal_nan=True)
+        self.assertLess(cases.iloc[1]['资本金NPV'], base['资本金NPV'])
+        self.assertEqual(model_service.M.LOAN_RATE, before)
+
+    def test_report_chart_font_covers_labels_and_sensitivity_names(self):
+        import ast
+        import inspect
+        from matplotlib.ft2font import FT2Font
+        from webapp import report_charts
+        labels = []
+        for source in (inspect.getsource(report_charts), inspect.getsource(report_sensitivity)):
+            labels.extend(node.value for node in ast.walk(ast.parse(source))
+                          if isinstance(node, ast.Constant) and isinstance(node.value, str))
+        required = {ord(char) for char in ''.join(labels) if '\u4e00' <= char <= '\u9fff'}
+        self.assertFalse(required - set(FT2Font(str(report_charts.FONT)).get_charmap()))
+
+    def test_market_price_uses_market_exports_excluding_utility_discharge(self):
+        config = {**self.config, 'aux_power_mw': 0.2}
+        timeseries = self.timeseries.copy()
+        timeseries.loc[48:, '实际发电功率(MW)'] = 0.0
+        detail = run_configuration(build_model_frame(timeseries, config), config, 1.0, 2)
+        m = detail['metrics']
+        self.assertGreater(m['utility_discharge_mwh'], 0)
+        self.assertAlmostEqual(m['post_market_export_mwh'], m['post_export_mwh']-m['utility_discharge_mwh'])
+        self.assertAlmostEqual(m['market_price_after'], m['market_revenue_after_wan']*1e4/m['post_market_export_mwh'])
 
     def test_grid_reports_day_progress_and_partial_rows(self):
         frame = build_model_frame(self.timeseries, self.config)

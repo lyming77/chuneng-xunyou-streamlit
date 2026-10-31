@@ -338,6 +338,36 @@ def _finance(P: float, H: int, annual_revenue: float, capacity_revenue: float, c
     )
 
 
+def report_sensitivity(config: dict, metrics: dict) -> pd.DataFrame:
+    """沿用本次输入参数和首年调度，仅对列明的财务条件做单因素比较。"""
+    cases = [
+        ("基准", 1.0, 1.0, float(config["battery_degradation_pct"]) / 100),
+        ("造价增加10%", 1.1, 1.0, float(config["battery_degradation_pct"]) / 100),
+        ("造价减少10%", 0.9, 1.0, float(config["battery_degradation_pct"]) / 100),
+        ("经营收益增加20%", 1.0, 1.2, float(config["battery_degradation_pct"]) / 100),
+        ("经营收益减少20%", 1.0, 0.8, float(config["battery_degradation_pct"]) / 100),
+        ("电池年衰减0%", 1.0, 1.0, 0.0),
+        ("电池年衰减4%", 1.0, 1.0, 0.04),
+    ]
+    rows = []
+    with _MODEL_LOCK, temporary_model_settings(config):
+        for label, capex_factor, revenue_factor, degradation in cases:
+            finance = M.project_finance(
+                metrics["P"], metrics["H"], metrics["R_year"] * 1e4 * revenue_factor,
+                metrics["R_cap"] * 1e4, capex_mult=capex_factor, degr=degradation,
+                n_year=int(config["project_years"]), loan_term=int(config["loan_term_years"]),
+                replacement_loan_term=int(config["replacement_loan_term_years"]),
+                equity_ratio=float(config["equity_ratio_pct"]) / 100,
+                equity_return=float(config["equity_discount_rate_pct"]) / 100,
+                cost_params=cost_params(config),
+            )
+            rows.append({"情景": label, "全投资NPV": finance["fi_npv"] / 1e4,
+                         "全投资IRR": finance["fi_irr"] * 100,
+                         "资本金NPV": finance["eq_npv"] / 1e4,
+                         "资本金IRR": finance["eq_irr"] * 100})
+    return pd.DataFrame(rows)
+
+
 def _result_row(P: float, H: int, frame: pd.DataFrame, config: dict,
                 day_progress: Callable[[int, int, object], None] | None = None) -> tuple[dict, dict]:
     annual_revenue, capacity_revenue, parts, schedule = solve_mpc(
@@ -445,6 +475,9 @@ def build_detail(frame: pd.DataFrame, config: dict, row: dict, detail: dict) -> 
     paid_charge_energy = float(paid_charge.sum() * M.DT)
     discharge_energy = float(discharge.sum() * M.DT)
     post_export = actual_generation - paid_charge_energy + discharge_energy
+    utility_discharge_energy = float(utility_discharge.sum() * M.DT)
+    market_discharge_energy = float(market_discharge.sum() * M.DT)
+    post_market_export = actual_generation - paid_charge_energy + market_discharge_energy
     base_market_revenue_yuan = float((actual * price).sum() * M.DT)
     rev_tou, rev_market, charging_cost = map(float, detail["parts"])
     market_revenue_after_yuan = base_market_revenue_yuan + rev_market - charging_cost
@@ -466,10 +499,15 @@ def build_detail(frame: pd.DataFrame, config: dict, row: dict, detail: dict) -> 
         "charge_mwh": float(charge.sum() * M.DT),
         "discharge_mwh": discharge_energy,
         "post_export_mwh": post_export,
+        "utility_discharge_mwh": utility_discharge_energy,
+        "market_discharge_mwh": market_discharge_energy,
+        "post_market_export_mwh": post_market_export,
+        "base_market_revenue_wan": base_market_revenue_yuan / 1e4,
+        "market_revenue_after_wan": market_revenue_after_yuan / 1e4,
         "curtailment_capture_pct": (float(curtailed_charge.sum() * M.DT) / curtailed_energy * 100
                                      if curtailed_energy else 0.0),
         "market_price_before": base_market_revenue_yuan / actual_generation if actual_generation else np.nan,
-        "market_price_after": market_revenue_after_yuan / post_export if post_export else np.nan,
+        "market_price_after": market_revenue_after_yuan / post_market_export if post_market_export else np.nan,
         "rev_tou_wan": rev_tou / 1e4,
         "rev_market_wan": rev_market / 1e4,
         "charging_cost_wan": charging_cost / 1e4,

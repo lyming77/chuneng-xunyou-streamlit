@@ -7,3 +7,4 @@ pulp==3.3.2
 highspy==1.15.1
 python-docx==1.2.0
 openpyxl==3.1.5
+matplotlib==3.11.1

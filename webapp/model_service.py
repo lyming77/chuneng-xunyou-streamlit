@@ -25,6 +25,7 @@ import 寻优_多项目 as MP
 from 方案B_滚动MPC import solve_mpc
 
 
+DATA_SCHEMA_VERSION = "available-power-v1"
 REQUIRED_COLUMNS = [
     "时间戳",
     "实际发电功率(MW)",
@@ -109,7 +110,7 @@ def default_config() -> dict:
 
 def config_signature(config: dict, data_bytes: bytes) -> str:
     payload = json.dumps(config, ensure_ascii=False, sort_keys=True, default=float).encode("utf-8")
-    return hashlib.sha256(b"available-power-v1\0" + data_bytes + payload).hexdigest()
+    return hashlib.sha256(DATA_SCHEMA_VERSION.encode() + b"\0" + data_bytes + payload).hexdigest()
 
 
 def upload_template_csv(start: str = "2026-01-01") -> bytes:

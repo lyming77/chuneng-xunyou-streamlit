@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from webapp.model_service import (
+    DATA_SCHEMA_VERSION,
     DEFAULT_COEF,
     DEFAULT_FLAT,
     DEFAULT_ZONE_TEXT,
@@ -89,6 +90,16 @@ def state_default(name, value):
     return st.session_state[name]
 
 
+if st.session_state.get("data_schema_version") != DATA_SCHEMA_VERSION:
+    had_saved_data = st.session_state.get("saved_signature") is not None
+    for key in ("saved_signature", "grid_result", "detail_result", "report_bytes", "schedule_bytes"):
+        st.session_state[key] = None
+    for key in ("timeseries", "model_frame", "upload_bytes"):
+        st.session_state.pop(key, None)
+    st.session_state.data_schema_version = DATA_SCHEMA_VERSION
+    if had_saved_data:
+        st.info("可用功率数据口径已更新，旧会话测算结果已清除。请在第一步重新保存数据与参数，再运行测算。")
+
 defaults = state_default("defaults", default_config())
 state_default("saved_signature", None)
 state_default("grid_result", None)
@@ -98,8 +109,8 @@ state_default("schedule_bytes", None)
 
 
 @st.cache_data(show_spinner=False)
-def cached_read_upload(data: bytes, filename: str) -> pd.DataFrame:
-    """按独立可用功率口径读取,使旧字段映射的缓存失效。"""
+def cached_read_upload(data: bytes, filename: str, schema_version: str) -> pd.DataFrame:
+    """口径版本参与缓存键,避免复用旧字段映射的上传解析结果。"""
     return read_uploaded_timeseries(data, filename)
 
 
@@ -401,7 +412,7 @@ with tab_input:
     if upload is not None:
         upload_bytes = upload.getvalue()
         try:
-            timeseries = cached_read_upload(upload_bytes, upload.name)
+            timeseries = cached_read_upload(upload_bytes, upload.name, DATA_SCHEMA_VERSION)
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("时序点数", f"{len(timeseries):,}")
             c2.metric("完整天数", f"{timeseries['时间戳'].dt.date.nunique():,}")

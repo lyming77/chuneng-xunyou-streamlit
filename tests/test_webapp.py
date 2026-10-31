@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from webapp.model_service import (
+    DATA_SCHEMA_VERSION,
     DEFAULT_COEF,
     DEFAULT_ZONE_TEXT,
     best_valid_row,
@@ -138,6 +139,23 @@ class WebAppTests(unittest.TestCase):
         columns = pd.read_csv(io.BytesIO(upload_template_csv()), nrows=0).columns
         self.assertIn("可用功率(MW)", columns)
         self.assertNotIn("理论功率(MW)", columns)
+
+    def test_schema_update_clears_old_saved_results_before_calculation(self):
+        from streamlit.testing.v1 import AppTest
+        app = AppTest.from_file(str(ROOT / "streamlit_app.py"))
+        app.session_state["data_schema_version"] = "old-theoretical-power"
+        app.session_state["saved_signature"] = "old-saved-data"
+        for key in ("grid_result", "detail_result", "report_bytes", "schedule_bytes",
+                    "timeseries", "model_frame", "upload_bytes"):
+            app.session_state[key] = "old-result"
+        app.run(timeout=30)
+        self.assertFalse(app.exception)
+        self.assertEqual(app.session_state["data_schema_version"], DATA_SCHEMA_VERSION)
+        for key in ("saved_signature", "grid_result", "detail_result", "report_bytes", "schedule_bytes"):
+            self.assertIsNone(app.session_state[key])
+        for key in ("timeseries", "model_frame", "upload_bytes"):
+            self.assertNotIn(key, app.session_state)
+        self.assertTrue(any("旧会话测算结果已清除" in item.value for item in app.info))
 
     def test_supplemental_charge_uses_available_power_not_theoretical_power(self):
         from 方案B_滚动MPC import solve_mpc

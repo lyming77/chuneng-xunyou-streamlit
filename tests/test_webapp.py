@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from webapp.model_service import (
+    BATTERY_REPLACEMENT_YEAR,
     DATA_SCHEMA_VERSION,
     DEFAULT_COEF,
     DEFAULT_ZONE_TEXT,
@@ -79,6 +80,7 @@ class WebAppTests(unittest.TestCase):
         self.assertTrue(result["error"].eq("").all())
 
     def test_battery_replacement_cash_flow_is_in_year_ten(self):
+        self.assertEqual(BATTERY_REPLACEMENT_YEAR, 10)
         frame = build_model_frame(self.timeseries, self.config)
         detail = run_configuration(frame, self.config, 1.0, 2)
         yearly = detail["finance"]["yearly"]
@@ -166,6 +168,11 @@ class WebAppTests(unittest.TestCase):
         upload = SimpleNamespace(name="available-power-test.csv", getvalue=lambda: data)
         with patch("streamlit.file_uploader", return_value=upload):
             app = AppTest.from_file(str(ROOT / "streamlit_app.py")).run(timeout=30)
+            replacement = next(w for w in app.number_input if w.label == "电池更换年限（年）")
+            self.assertEqual(replacement.value, 10)
+            self.assertTrue(replacement.disabled)
+            repayment = next(w for w in app.number_input if w.label == "换电池后贷款偿还期限（年）")
+            self.assertEqual(repayment.value, 7)
             next(w for w in app.number_input if w.label == "新能源装机容量（MW）").set_value(10.0)
             next(w for w in app.button if w.label == "保存数据与参数").click().run(timeout=30)
             next(w for w in app.multiselect if w.label == "持续时长H（小时）").set_value([4]).run(timeout=30)
@@ -224,6 +231,18 @@ class WebAppTests(unittest.TestCase):
         self.assertTrue(any("天" in label for _, _, label in progress))
         self.assertEqual(len(partial), 1)
         self.assertEqual(len(partial[0]), 1)
+
+    def test_selected_configuration_reports_actual_days_until_completion(self):
+        frame = build_model_frame(self.timeseries, self.config)
+        frame = pd.concat([frame] * 6, ignore_index=True)
+        frame["time"] = pd.date_range("2026-01-01", periods=len(frame), freq="15min")
+        progress = []
+        detail = run_configuration(
+            frame, self.config, 1.0, 2,
+            day_progress=lambda done, total, date: progress.append((done, total, date)))
+        self.assertEqual([(done, total) for done, total, _ in progress], [(1, 6), (5, 6), (6, 6)])
+        self.assertEqual(str(progress[-1][2]), "2026-01-06")
+        self.assertEqual(len(detail["schedule"]), 6 * 96)
 
     def test_best_valid_row_handles_all_missing_values(self):
         frame = pd.DataFrame({"P": [1.0, 2.0], "eq_irr": [np.nan, np.inf],

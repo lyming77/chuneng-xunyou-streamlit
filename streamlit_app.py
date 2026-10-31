@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from webapp.model_service import (
+    BATTERY_REPLACEMENT_YEAR,
     DATA_SCHEMA_VERSION,
     DEFAULT_COEF,
     DEFAULT_FLAT,
@@ -252,7 +253,15 @@ def render_parameters(base: dict) -> dict:
         b4.metric("容量单位造价", f"{benchmark['yuan_per_wh']:.3f}元/Wh")
         st.caption("校核采用连续造价，不执行电池舱和PCS套数向上取整；用于快速判断当前输入造价水平。")
 
-    with st.expander("财务参数", expanded=False):
+    with st.expander(f"财务参数｜电池更换年限{BATTERY_REPLACEMENT_YEAR}年", expanded=False):
+        replacement_time, replacement_note = st.columns([1, 3], vertical_alignment="bottom")
+        with replacement_time:
+            st.number_input("电池更换年限（年）", value=int(BATTERY_REPLACEMENT_YEAR),
+                            step=1, disabled=True,
+                            help="对应模型实际更换时点，当前为第10年末；第11年容量重置。")
+        with replacement_note:
+            st.caption(f"电池在第{BATTERY_REPLACEMENT_YEAR}年末更换，第{BATTERY_REPLACEMENT_YEAR + 1}年容量重置；"
+                       f"项目评价期不超过{BATTERY_REPLACEMENT_YEAR}年时，期内不再更换。")
         row1 = st.columns(4, vertical_alignment="bottom")
         with row1[0]:
             config["project_years"] = int(number("项目评价期（年）", "p_years", int(base["project_years"]),
@@ -262,8 +271,9 @@ def render_parameters(base: dict) -> dict:
                                                     step=1, min_value=1, max_value=40))
         with row1[2]:
             config["replacement_loan_term_years"] = int(number(
-                "更换电池贷款期限（年）", "p_rep_loan", int(base["replacement_loan_term_years"]),
-                step=1, min_value=1, max_value=20))
+                "换电池后贷款偿还期限（年）", "p_rep_loan", int(base["replacement_loan_term_years"]),
+                step=1, min_value=1, max_value=20,
+                help="仅表示换电池新增贷款的还本付息期限，默认7年，与第10年末换电池的时点分别设置。"))
         with row1[3]:
             config["equity_ratio_pct"] = number(
                 "资本金比例（%）", "p_equity", base["equity_ratio_pct"], step=1.0, min_value=0.0, max_value=100.0)
@@ -286,10 +296,6 @@ def render_parameters(base: dict) -> dict:
         with row3[0]:
             config["income_tax_pct"] = number(
                 "所得税率（%）", "p_tax", base["income_tax_pct"], step=1.0, min_value=0.0, max_value=100.0)
-        with row3[1]:
-            st.text_input("电池更换时间", value="第10年末", disabled=True,
-                          help="当前模型在第10年末换电池，第11年容量重置；评价期不超过10年时不换电池。")
-        st.caption("电池更换时间与“更换电池贷款期限”分别表示更换时点和新增贷款的偿还年限。")
 
     with st.expander("工商业分时电价", expanded=False):
         st.caption(
@@ -628,13 +634,38 @@ with tab_report:
             c3.metric("全投资NPV", f"{selected_row.fi_npv:,.1f}万元")
             c4.metric("资本金IRR", "—" if not np.isfinite(selected_row.eq_irr) else f"{selected_row.eq_irr:.2f}%")
             if st.button("计算选定配置并生成报告", type="primary", width="stretch"):
-                with st.spinner("正在重新计算全年调度并生成报告……"):
-                    detail = run_configuration(st.session_state.model_frame, st.session_state.config,
-                                               power, duration)
-                    st.session_state.detail_result = detail
-                    st.session_state.schedule_bytes = schedule_excel_bytes(detail)
-                    st.session_state.report_bytes = build_report_bytes(st.session_state.config, grid, detail)
-                st.success("选定配置计算完成。")
+                progress_bar = st.progress(0.0, text="第1/3阶段：计算全年调度")
+                status = st.empty()
+                started_at = time.monotonic()
+                status.caption(f"正在准备计算{power:g}MW/{power * duration:g}MWh……")
+                def update_detail_progress(done, total_days, date):
+                    fraction = min(1.0, max(0.0, done / total_days))
+                    elapsed = time.monotonic() - started_at
+                    eta = elapsed * (1 - fraction) / fraction if fraction > 0 else None
+                    eta_text = f"｜预计调度剩余约{eta / 60:.1f}分钟" if eta is not None else ""
+                    progress_bar.progress(
+                        fraction, text=f"第1/3阶段：全年调度 {done}/{total_days}天（{fraction:.1%}）")
+                    status.caption(f"{date}｜已用{elapsed / 60:.1f}分钟{eta_text}")
+                try:
+                    detail = run_configuration(
+                        st.session_state.model_frame, st.session_state.config,
+                        power, duration, day_progress=update_detail_progress)
+                    progress_bar.progress(1.0, text="第2/3阶段：调度已完成，正在生成充放电Excel")
+                    status.caption(f"已用{(time.monotonic() - started_at) / 60:.1f}分钟｜正在整理充放电明细和财务现金流……")
+                    schedule_bytes = schedule_excel_bytes(detail)
+                    progress_bar.progress(1.0, text="第3/3阶段：调度已完成，正在生成投资分析报告")
+                    status.caption(f"已用{(time.monotonic() - started_at) / 60:.1f}分钟｜正在生成Word报告……")
+                    report_bytes = build_report_bytes(st.session_state.config, grid, detail)
+                except Exception as exc:
+                    progress_bar.empty()
+                    status.error(f"选定配置生成中断：{exc}")
+                    st.stop()
+                st.session_state.detail_result = detail
+                st.session_state.schedule_bytes = schedule_bytes
+                st.session_state.report_bytes = report_bytes
+                progress_bar.empty()
+                status.empty()
+                st.success(f"选定配置计算完成，充放电明细和报告已生成。总用时{(time.monotonic() - started_at) / 60:.1f}分钟。")
 
             detail = st.session_state.detail_result
             if detail is not None:

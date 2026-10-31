@@ -26,6 +26,7 @@ from 方案B_滚动MPC import solve_mpc
 
 
 DATA_SCHEMA_VERSION = "available-power-v1"
+BATTERY_REPLACEMENT_YEAR = M.DEP_BATT
 REQUIRED_COLUMNS = [
     "时间戳",
     "实际发电功率(MW)",
@@ -418,9 +419,10 @@ def run_grid(frame: pd.DataFrame, config: dict, powers: list[float], hours: list
     return result
 
 
-def run_configuration(frame: pd.DataFrame, config: dict, power: float, hours: int) -> dict:
+def run_configuration(frame: pd.DataFrame, config: dict, power: float, hours: int,
+                      *, day_progress: Callable[[int, int, object], None] | None = None) -> dict:
     with _MODEL_LOCK, temporary_model_settings(config):
-        row, detail = _result_row(float(power), int(hours), frame, config)
+        row, detail = _result_row(float(power), int(hours), frame, config, day_progress)
         return build_detail(frame, config, row, detail)
 
 

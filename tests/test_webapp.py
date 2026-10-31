@@ -2,6 +2,7 @@ import sys
 import io
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -156,6 +157,24 @@ class WebAppTests(unittest.TestCase):
         for key in ("timeseries", "model_frame", "upload_bytes"):
             self.assertNotIn(key, app.session_state)
         self.assertTrue(any("旧会话测算结果已清除" in item.value for item in app.info))
+
+    def test_saving_yearly_upload_unlocks_power_and_duration_selection(self):
+        from streamlit.testing.v1 import AppTest
+        yearly = pd.concat([self.timeseries] * 365, ignore_index=True)
+        yearly["时间戳"] = pd.date_range("2026-01-01", periods=len(yearly), freq="15min")
+        data = yearly.to_csv(index=False).encode("utf-8-sig")
+        upload = SimpleNamespace(name="available-power-test.csv", getvalue=lambda: data)
+        with patch("streamlit.file_uploader", return_value=upload):
+            app = AppTest.from_file(str(ROOT / "streamlit_app.py")).run(timeout=30)
+            next(w for w in app.number_input if w.label == "新能源装机容量（MW）").set_value(10.0)
+            next(w for w in app.button if w.label == "保存数据与参数").click().run(timeout=30)
+        self.assertFalse(app.exception)
+        np.testing.assert_allclose(app.session_state["model_frame"]["avail"], 2.0)
+        self.assertEqual(len(app.session_state["model_frame"]), 35040)
+        labels = {w.label for w in app.number_input}
+        self.assertIn("储能功率下限（MW）", labels)
+        self.assertIn("储能功率上限（MW）", labels)
+        self.assertTrue(any("第一步已完成" in item.value for item in app.success))
 
     def test_supplemental_charge_uses_available_power_not_theoretical_power(self):
         from 方案B_滚动MPC import solve_mpc

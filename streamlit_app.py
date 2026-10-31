@@ -488,7 +488,7 @@ with tab_grid:
             durations = st.pills(
                 "持续时长H（小时）", [2, 4, 6, 8, 10], selection_mode="multi",
                 default=[2, 4, 6, 8, 10], key="grid_hours",
-                format_func=lambda value: f"{value}小时", width="stretch", wrap=False,
+                format_func=lambda value: f"{value}小时", width="stretch",
             )
         if minimum_power > maximum_power:
             powers = []

@@ -27,6 +27,7 @@ from 方案B_滚动MPC import solve_mpc
 
 DATA_SCHEMA_VERSION = "available-power-v1"
 DEFAULT_BATTERY_REPLACEMENT_YEAR = M.DEP_BATT
+BATTERY_REPLACEMENT_YEAR = DEFAULT_BATTERY_REPLACEMENT_YEAR  # 兼容旧调用,仅为默认值
 REQUIRED_COLUMNS = [
     "时间戳",
     "实际发电功率(MW)",

@@ -274,6 +274,10 @@ def render_parameters(base: dict) -> dict:
         with row3[0]:
             config["income_tax_pct"] = number(
                 "所得税率（%）", "p_tax", base["income_tax_pct"], step=1.0, min_value=0.0, max_value=100.0)
+        with row3[1]:
+            st.text_input("电池更换时间", value="第10年末", disabled=True,
+                          help="当前模型在第10年末换电池，第11年容量重置；评价期不超过10年时不换电池。")
+        st.caption("电池更换时间与“更换电池贷款期限”分别表示更换时点和新增贷款的偿还年限。")
 
     with st.expander("工商业分时电价", expanded=False):
         st.caption(
@@ -445,26 +449,47 @@ with tab_grid:
         station_power = float(config["station_power_mw"])
         default_ratio = 50.0 if config["project_type"] == "光伏" else 30.0
         st.subheader("设置全网格范围")
-        c1, c2 = st.columns([1, 2], vertical_alignment="bottom")
+        grid_project = (station_power, config["project_type"])
+        if st.session_state.get("grid_project") != grid_project:
+            st.session_state.grid_project = grid_project
+            st.session_state.grid_min_power = min(1.0, station_power)
+            st.session_state.grid_max_power = max(
+                st.session_state.grid_min_power, station_power * default_ratio / 100)
+        c1, c2, c3 = st.columns([1, 1, 2], vertical_alignment="bottom")
         with c1:
-            maximum_ratio = st.number_input("储能功率上限/新能源装机（%）", min_value=1.0,
-                                            max_value=100.0, value=default_ratio, step=1.0,
-                                            key="grid_ratio")
+            minimum_power = st.number_input("储能功率下限（MW）", min_value=0.1,
+                                            max_value=station_power, step=1.0,
+                                            key="grid_min_power",
+                                            help="下限等于上限时，只计算这一个功率。")
         with c2:
+            maximum_power = st.number_input("储能功率上限（MW）", min_value=0.1,
+                                            max_value=station_power, step=1.0,
+                                            key="grid_max_power",
+                                            help="默认风电为新能源装机的30%，光伏为50%；可按需要调整。")
+        with c3:
             durations = st.pills(
                 "持续时长H（小时）", [2, 4, 6, 8, 10], selection_mode="multi",
                 default=[2, 4, 6, 8, 10], key="grid_hours",
                 format_func=lambda value: f"{value}小时", width="stretch", wrap=False,
             )
-        powers = make_power_grid(station_power, config["project_type"], maximum_ratio)
-        st.caption("功率网格：1—5MW按1MW递增，10MW以上按5MW递增。"
+        if minimum_power > maximum_power:
+            powers = []
+            st.error("储能功率下限不得大于上限，请调整功率范围。")
+        else:
+            powers = make_power_grid(
+                station_power, config["project_type"],
+                minimum_power_mw=minimum_power, maximum_power_mw=maximum_power)
+        st.caption("功率网格：范围内1—5MW按1MW取点，10MW以上按5MW取点，并包含填写的上下限。"
                    f"当前共{len(powers)}个功率点、{len(durations)}个时长点、"
                    f"{len(powers) * len(durations)}个组合。")
+        if powers:
+            st.caption("本次功率点（MW）：" + "、".join(f"{power:g}" for power in powers))
+        st.caption("例如：上下限均填100MW，时长仅选4小时，即只计算100MW/400MWh这一个配置。")
         st.info("全年方案A需要逐日求解365个日前计划，云端算力波动较大。"
                 "开始后页面会持续显示已完成天数和预计剩余时间，每完成一个组合立即输出一行结果。"
                 "计算期间请勿重复提交或关闭页面。")
         if st.button("运行全网格测算", type="primary", width="stretch",
-                     disabled=not durations):
+                     disabled=not durations or not powers):
             progress_bar = st.progress(0.0)
             status = st.empty()
             partial_table = st.empty()

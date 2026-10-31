@@ -300,15 +300,22 @@ def temporary_model_settings(config: dict):
             setattr(M, name, value)
 
 
-def make_power_grid(station_power: float, project_type: str, maximum_ratio_pct: float | None = None) -> list[float]:
+def make_power_grid(station_power: float, project_type: str, maximum_ratio_pct: float | None = None,
+                    *, minimum_power_mw: float = 1.0,
+                    maximum_power_mw: float | None = None) -> list[float]:
     default_ratio = 50.0 if project_type == "光伏" else 30.0
     ratio = default_ratio if maximum_ratio_pct is None else float(maximum_ratio_pct)
-    maximum = max(1.0, float(station_power) * ratio / 100)
+    maximum = (max(1.0, float(station_power) * ratio / 100)
+               if maximum_power_mw is None else float(maximum_power_mw))
+    minimum = float(minimum_power_mw)
+    if not (math.isfinite(minimum) and math.isfinite(maximum) and 0 < minimum <= maximum):
+        raise ValueError("功率上下限必须为正数，且下限不得大于上限")
     values = [float(value) for value in range(1, min(5, int(math.floor(maximum))) + 1)]
     if maximum >= 10:
         values.extend(float(value) for value in range(10, int(math.floor(maximum / 5)) * 5 + 1, 5))
-    if not values:
-        values = [round(maximum, 3)]
+    values = [value for value in values if minimum <= value <= maximum]
+    if maximum_power_mw is not None or minimum != 1.0:
+        values.extend([minimum, maximum])
     return sorted(set(values))
 
 

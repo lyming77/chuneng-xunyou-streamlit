@@ -52,6 +52,33 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(make_power_grid(76.5, "风电", 30),
                          [1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 15.0, 20.0])
 
+    def test_power_bounds_allow_single_and_multiple_configurations(self):
+        self.assertEqual(make_power_grid(480, "光伏", minimum_power_mw=100,
+                                         maximum_power_mw=100), [100.0])
+        self.assertEqual(make_power_grid(100, "风电", minimum_power_mw=10,
+                                         maximum_power_mw=20), [10.0, 15.0, 20.0])
+        self.assertEqual(make_power_grid(95, "风电", minimum_power_mw=6.5,
+                                         maximum_power_mw=6.5), [6.5])
+        self.assertEqual(make_power_grid(100, "风电", minimum_power_mw=7,
+                                         maximum_power_mw=12), [7.0, 10.0, 12.0])
+        for lower, upper in [(10, 5), (0, 5), (1, np.inf), (np.nan, 5)]:
+            with self.subTest(lower=lower, upper=upper), self.assertRaises(ValueError):
+                make_power_grid(100, "风电", minimum_power_mw=lower, maximum_power_mw=upper)
+
+    def test_selected_power_range_controls_combinations_actually_calculated(self):
+        frame = build_model_frame(self.timeseries, self.config)
+        powers = make_power_grid(10, "风电", minimum_power_mw=2, maximum_power_mw=2)
+        result = run_grid(frame, self.config, powers, [2, 4])
+        self.assertEqual(list(zip(result["P"], result["H"])), [(2.0, 2), (2.0, 4)])
+        self.assertTrue(result["error"].eq("").all())
+
+    def test_battery_replacement_cash_flow_is_in_year_ten(self):
+        frame = build_model_frame(self.timeseries, self.config)
+        detail = run_configuration(frame, self.config, 1.0, 2)
+        yearly = detail["finance"]["yearly"]
+        self.assertEqual([row["y"] for row in yearly if row["capex_cf"] > 0], [10])
+        self.assertEqual(yearly[10]["cap_factor"], 1.0)
+
     def test_missing_power_is_filled_by_existing_rule(self):
         raw = self.timeseries.copy()
         raw.loc[0, "实际发电功率(MW)"] = np.nan

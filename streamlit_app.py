@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from webapp.model_service import (
-    BATTERY_REPLACEMENT_YEAR,
+    DEFAULT_BATTERY_REPLACEMENT_YEAR,
     DATA_SCHEMA_VERSION,
     DEFAULT_COEF,
     DEFAULT_FLAT,
@@ -253,15 +253,19 @@ def render_parameters(base: dict) -> dict:
         b4.metric("容量单位造价", f"{benchmark['yuan_per_wh']:.3f}元/Wh")
         st.caption("校核采用连续造价，不执行电池舱和PCS套数向上取整；用于快速判断当前输入造价水平。")
 
-    with st.expander(f"财务参数｜电池更换年限{BATTERY_REPLACEMENT_YEAR}年", expanded=False):
+    replacement_default = int(base.get("battery_replacement_year", DEFAULT_BATTERY_REPLACEMENT_YEAR))
+    replacement_display = int(st.session_state.get("p_battery_replacement_year", replacement_default))
+    with st.expander(f"财务参数｜电池更换年限{replacement_display}年", expanded=False):
         replacement_time, replacement_note = st.columns([1, 3], vertical_alignment="bottom")
         with replacement_time:
-            st.number_input("电池更换年限（年）", value=int(BATTERY_REPLACEMENT_YEAR),
-                            step=1, disabled=True,
-                            help="对应模型实际更换时点，当前为第10年末；第11年容量重置。")
+            config["battery_replacement_year"] = int(number(
+                "电池更换年限（年）", "p_battery_replacement_year", replacement_default,
+                step=1, min_value=1,
+                help="默认第10年末更换一次，可修改；更换年份不早于评价期末时，期内不更换。"))
         with replacement_note:
-            st.caption(f"电池在第{BATTERY_REPLACEMENT_YEAR}年末更换，第{BATTERY_REPLACEMENT_YEAR + 1}年容量重置；"
-                       f"项目评价期不超过{BATTERY_REPLACEMENT_YEAR}年时，期内不再更换。")
+            replacement_year = config["battery_replacement_year"]
+            st.caption(f"电池在第{replacement_year}年末更换一次，第{replacement_year + 1}年容量重置；"
+                       f"项目评价期不超过{replacement_year}年时，期内不更换。")
         row1 = st.columns(4, vertical_alignment="bottom")
         with row1[0]:
             config["project_years"] = int(number("项目评价期（年）", "p_years", int(base["project_years"]),
@@ -273,7 +277,7 @@ def render_parameters(base: dict) -> dict:
             config["replacement_loan_term_years"] = int(number(
                 "换电池后贷款偿还期限（年）", "p_rep_loan", int(base["replacement_loan_term_years"]),
                 step=1, min_value=1, max_value=20,
-                help="仅表示换电池新增贷款的还本付息期限，默认7年，与第10年末换电池的时点分别设置。"))
+                help="仅表示换电池新增贷款的还本付息期限，默认7年，与电池更换年份分别设置。"))
         with row1[3]:
             config["equity_ratio_pct"] = number(
                 "资本金比例（%）", "p_equity", base["equity_ratio_pct"], step=1.0, min_value=0.0, max_value=100.0)

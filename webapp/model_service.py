@@ -26,7 +26,7 @@ from 方案B_滚动MPC import solve_mpc
 
 
 DATA_SCHEMA_VERSION = "available-power-v1"
-BATTERY_REPLACEMENT_YEAR = M.DEP_BATT
+DEFAULT_BATTERY_REPLACEMENT_YEAR = M.DEP_BATT
 REQUIRED_COLUMNS = [
     "时间戳",
     "实际发电功率(MW)",
@@ -82,6 +82,7 @@ def default_config() -> dict:
         "maximum_charge_price_yuan_per_mwh": 250.0,
         "curtailment_price_yuan_per_mwh": -80.0,
         "project_years": 20,
+        "battery_replacement_year": DEFAULT_BATTERY_REPLACEMENT_YEAR,
         "loan_term_years": 15,
         "replacement_loan_term_years": 7,
         "equity_ratio_pct": 30.0,
@@ -332,6 +333,7 @@ def _finance(P: float, H: int, annual_revenue: float, capacity_revenue: float, c
         n_year=int(config["project_years"]),
         loan_term=int(config["loan_term_years"]),
         replacement_loan_term=int(config["replacement_loan_term_years"]),
+        battery_replacement_year=int(config.get("battery_replacement_year", DEFAULT_BATTERY_REPLACEMENT_YEAR)),
         equity_ratio=float(config["equity_ratio_pct"]) / 100,
         equity_return=float(config["equity_discount_rate_pct"]) / 100,
         cost_params=cost_params(config),
@@ -357,6 +359,7 @@ def report_sensitivity(config: dict, metrics: dict) -> pd.DataFrame:
                 metrics["R_cap"] * 1e4, capex_mult=capex_factor, degr=degradation,
                 n_year=int(config["project_years"]), loan_term=int(config["loan_term_years"]),
                 replacement_loan_term=int(config["replacement_loan_term_years"]),
+                battery_replacement_year=int(config.get("battery_replacement_year", DEFAULT_BATTERY_REPLACEMENT_YEAR)),
                 equity_ratio=float(config["equity_ratio_pct"]) / 100,
                 equity_return=float(config["equity_discount_rate_pct"]) / 100,
                 cost_params=cost_params(config),

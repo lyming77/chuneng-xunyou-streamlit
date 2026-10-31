@@ -487,7 +487,7 @@ def project_finance(P, H, R_year, r_cap, capex_mult=1.0, degr=None,
                     wacc=None, equity_return=None, n_year=None,
                     loan_term=None, replacement_loan_term=None,
                     equity_ratio=None, cost_model=None, discrete_capex=False,
-                    cost_params=None):
+                    cost_params=None, battery_replacement_year=None):
     """全生命周期现金流(全投资 + 资本金两套口径),返回指标 dict。
 
     capex_mult / degr / wacc / equity_return / n_year / loan_term / equity_ratio
@@ -500,7 +500,7 @@ def project_finance(P, H, R_year, r_cap, capex_mult=1.0, degr=None,
     口径(用户拍板):
     - detailed 造价:站内设备+土地/场地+建安+前期+设计监理+预备费;
       不含新建送出线路和主变扩容。legacy 保留历史四项造价用于对照。
-    - 项目年限:长周期 20 年、短周期 10 年;长周期项目第 10 年更换电池并追加 capex_rep=电池 50万×E。
+    - 电池默认第10年末更换一次,可由battery_replacement_year覆盖;不在评价期末或期末之后更换。
     - detailed 分类折旧:电池10年、功率设备10年、土建/场地20年、前期费10年;
       10年项目期末按剩余经济寿命回收功率设备和土建/场地价值,电池残值0。
       legacy 严格保留旧口径:电池及非电池资产均在项目期内折完、期末余值0。
@@ -509,6 +509,9 @@ def project_finance(P, H, R_year, r_cap, capex_mult=1.0, degr=None,
       更换电池追加投资贷款 7 年。
     """
     n = N_YEAR if n_year is None else int(n_year)
+    replacement_year = DEP_BATT if battery_replacement_year is None else int(battery_replacement_year)
+    if replacement_year < 1 or (battery_replacement_year is not None and replacement_year != battery_replacement_year):
+        raise ValueError("电池更换年份须为正整数")
     if loan_term is None:
         loan_term_1 = LOAN_TERM if n > DEP_BATT else LOAN_TERM_SHORT
     else:
@@ -528,14 +531,15 @@ def project_finance(P, H, R_year, r_cap, capex_mult=1.0, degr=None,
     cost = investment_breakdown(P, H, capex_mult, cost_model, discrete_capex, cost_params)
     model = cost["cost_model"]
     assets = cost["asset_pools"]
-    capex_batt = cost["replacement_battery"]                # 长周期项目第10年更换的电池系统
+    capex_batt = cost["replacement_battery"]                # 按输入年份更换一次的电池系统
     capex_0 = cost["total"]                                  # 初始投资(元)
-    replace = n > DEP_BATT                                   # 项目年限 > 电池折旧年限才换电池
-    capex_rep = capex_batt if replace else 0.0               # 第 10 年更换电池追加投资(元)
+    replace = n > replacement_year                         # 评价期末不再投入更换投资
+    capex_rep = capex_batt if replace else 0.0
 
-    # 电池容量逐年线性衰减(DEGR/年);换电池年(索引 DEP_BATT)后重置,老项目(n≤DEP_BATT)不重置。
+    # 年末更换一次,次年容量重置;之后按新电池年龄衰减,不产生未计投资的再次重置。
     if replace:
-        cap_factor = np.array([max(0.0, 1 - dg * (y % DEP_BATT)) for y in range(n)])
+        cap_factor = np.array([max(0.0, 1 - dg * (y if y < replacement_year else y - replacement_year))
+                               for y in range(n)])
     else:
         cap_factor = np.array([max(0.0, 1 - dg * y) for y in range(n)])
     revenue = (R_year + r_cap) * cap_factor                  # 逐年经营收入(元/年, 第 1 年满容量)
@@ -546,20 +550,24 @@ def project_finance(P, H, R_year, r_cap, capex_mult=1.0, degr=None,
         capex_ac = capex_0 - capex_batt
         dep = np.full(n, capex_ac / n)
         if replace:
-            dep[:DEP_BATT] += capex_batt / DEP_BATT
-            dep[DEP_BATT:] += capex_batt / DEP_BATT
+            dep[:replacement_year] += capex_batt / replacement_year
+            dep[replacement_year:] += capex_batt / (n - replacement_year)
         else:
             dep += capex_batt / n
         terminal_value = 0.0
         terminal_tax_book = 0.0
     else:
         dep_battery = _depreciation_schedule(assets["battery"], TAX_LIFE_BATTERY, n)
+        if replace:
+            # 原电池更换后停止折旧;零处置收入下未折完账面价值计入更换当年的费用。
+            dep_battery[replacement_year:] = 0.0
+            dep_battery[replacement_year - 1] += max(0.0, assets["battery"] - dep_battery.sum())
         dep_power = _depreciation_schedule(assets["power_equipment"], TAX_LIFE_POWER, n)
         dep_civil = _depreciation_schedule(assets["civil_land"], TAX_LIFE_CIVIL, n)
         dep_predev = _depreciation_schedule(assets["predevelopment"], AMORT_LIFE_PREDEV, n)
         dep = dep_battery + dep_power + dep_civil + dep_predev
         if replace:
-            dep += _depreciation_schedule(capex_rep, TAX_LIFE_BATTERY, n, start=DEP_BATT)
+            dep += _depreciation_schedule(capex_rep, TAX_LIFE_BATTERY, n, start=replacement_year)
 
         terminal_value = (
             _remaining_economic_value(assets["power_equipment"], ECON_LIFE_POWER, n,
@@ -573,18 +581,18 @@ def project_finance(P, H, R_year, r_cap, capex_mult=1.0, degr=None,
         terminal_tax_book += max(0.0, assets["predevelopment"] - dep_predev.sum())
         if replace:
             replacement_dep = _depreciation_schedule(capex_rep, TAX_LIFE_BATTERY, n,
-                                                      start=DEP_BATT)
+                                                      start=replacement_year)
             terminal_tax_book += max(0.0, capex_rep - replacement_dep.sum())
 
     terminal_tax = max(0.0, terminal_value - terminal_tax_book) * TAX_RATE
     terminal_net = terminal_value - terminal_tax
 
-    # 更换投资现金流:仅换电池项目,第 10 年(索引 9)
+    # 更换投资与追加资本金在输入年份的年末投入。
     capex_cf = np.zeros(n)
     equity_inj = np.zeros(n)
     if replace:
-        capex_cf[DEP_BATT - 1] = capex_rep
-        equity_inj[DEP_BATT - 1] = equity_ratio_ * capex_rep  # 第 10 年资本金追加
+        capex_cf[replacement_year - 1] = capex_rep
+        equity_inj[replacement_year - 1] = equity_ratio_ * capex_rep
 
     # 全投资口径(利息不抵税)
     fi_tax = np.maximum(0, revenue - om - dep) * TAX_RATE
@@ -605,10 +613,10 @@ def project_finance(P, H, R_year, r_cap, capex_mult=1.0, degr=None,
         bal1 = max(0.0, bal1 - (a1 - bal1 * LOAN_RATE))
     if replace:
         loan2 = (1 - equity_ratio_) * capex_rep
-        term2 = min(max(1, replacement_loan_term_), n - DEP_BATT)
+        term2 = min(max(1, replacement_loan_term_), n - replacement_year)
         a2 = _annuity(loan2, LOAN_RATE, term2)
         bal2 = loan2
-        for t in range(DEP_BATT, DEP_BATT + term2):         # 更换次年起连续偿还 term2 年
+        for t in range(replacement_year, replacement_year + term2):
             interest[t] += bal2 * LOAN_RATE
             principal[t] += a2 - bal2 * LOAN_RATE
             bal2 = max(0.0, bal2 - (a2 - bal2 * LOAN_RATE))
@@ -637,6 +645,7 @@ def project_finance(P, H, R_year, r_cap, capex_mult=1.0, degr=None,
                 equity_ratio=equity_ratio_, wacc=wacc_, loan1=loan1,
                 loan2=((1 - equity_ratio_) * capex_rep if replace else 0.0),
                 cost_model=model, capex_breakdown=cost,
+                battery_replacement_year=replacement_year if replace else None,
                 terminal_value=terminal_value, terminal_tax_book=terminal_tax_book,
                 terminal_tax=terminal_tax, terminal_net=terminal_net)
 

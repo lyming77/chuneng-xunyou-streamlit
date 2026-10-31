@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from webapp.model_service import (
-    BATTERY_REPLACEMENT_YEAR,
+    DEFAULT_BATTERY_REPLACEMENT_YEAR,
     DATA_SCHEMA_VERSION,
     DEFAULT_COEF,
     DEFAULT_ZONE_TEXT,
@@ -81,7 +81,7 @@ class WebAppTests(unittest.TestCase):
         self.assertTrue(result["error"].eq("").all())
 
     def test_battery_replacement_cash_flow_is_in_year_ten(self):
-        self.assertEqual(BATTERY_REPLACEMENT_YEAR, 10)
+        self.assertEqual(DEFAULT_BATTERY_REPLACEMENT_YEAR, 10)
         frame = build_model_frame(self.timeseries, self.config)
         detail = run_configuration(frame, self.config, 1.0, 2)
         yearly = detail["finance"]["yearly"]
@@ -171,7 +171,8 @@ class WebAppTests(unittest.TestCase):
             app = AppTest.from_file(str(ROOT / "streamlit_app.py")).run(timeout=30)
             replacement = next(w for w in app.number_input if w.label == "电池更换年限（年）")
             self.assertEqual(replacement.value, 10)
-            self.assertTrue(replacement.disabled)
+            self.assertFalse(replacement.disabled)
+            replacement.set_value(8)
             repayment = next(w for w in app.number_input if w.label == "换电池后贷款偿还期限（年）")
             self.assertEqual(repayment.value, 7)
             next(w for w in app.number_input if w.label == "新能源装机容量（MW）").set_value(10.0)
@@ -180,6 +181,7 @@ class WebAppTests(unittest.TestCase):
         self.assertFalse(app.exception)
         np.testing.assert_allclose(app.session_state["model_frame"]["avail"], 2.0)
         self.assertEqual(len(app.session_state["model_frame"]), 35040)
+        self.assertEqual(app.session_state["config"]["battery_replacement_year"], 8)
         labels = {w.label for w in app.number_input}
         self.assertIn("储能功率下限（MW）", labels)
         self.assertIn("储能功率上限（MW）", labels)
@@ -238,6 +240,7 @@ class WebAppTests(unittest.TestCase):
     def test_report_sensitivity_preserves_user_costs_and_financing(self):
         config = {**self.config, "battery_cost_wan_per_mwh": 45.0,
                   "pcs_cost_wan_per_mw": 25.0, "station_equipment_cost_wan_per_mw": 15.0,
+                  "battery_replacement_year": 8,
                   "project_years": 10, "loan_term_years": 7, "equity_ratio_pct": 40.0,
                   "loan_rate_pct": 4.0, "income_tax_pct": 20.0, "om_ratio_pct": 1.2}
         frame = build_model_frame(self.timeseries, config)
@@ -250,6 +253,17 @@ class WebAppTests(unittest.TestCase):
             np.testing.assert_allclose(base[column], detail['metrics'][key], equal_nan=True)
         self.assertLess(cases.iloc[1]['资本金NPV'], base['资本金NPV'])
         self.assertEqual(model_service.M.LOAN_RATE, before)
+
+    def test_report_uses_entered_replacement_year(self):
+        from docx import Document
+        config = {**self.config, 'battery_replacement_year': 8}
+        detail = run_configuration(build_model_frame(self.timeseries, config), config, 1., 2)
+        grid = pd.DataFrame([detail['metrics']])
+        doc = Document(io.BytesIO(build_report_bytes(config, grid, detail)))
+        text = ''.join(p.text for p in doc.paragraphs)
+        self.assertIn('第8年末更换电池', text)
+        self.assertIn('第9年容量重置', text)
+        self.assertNotIn('第10年末更换电池', text)
 
     def test_report_chart_font_covers_labels_and_sensitivity_names(self):
         import ast

@@ -14,7 +14,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-from webapp.model_service import BATTERY_REPLACEMENT_YEAR, report_sensitivity
+from webapp.model_service import DEFAULT_BATTERY_REPLACEMENT_YEAR, report_sensitivity
 from webapp.report_charts import build_charts
 
 
@@ -206,6 +206,7 @@ def build_report_bytes(config: dict, grid: pd.DataFrame, detail: dict) -> bytes:
     metrics = detail["metrics"]
     finance = detail["finance"]
     investment = finance["capex_breakdown"]
+    replacement_year = int(config.get("battery_replacement_year", DEFAULT_BATTERY_REPLACEMENT_YEAR))
     schedule = detail["schedule"]
     financing = _financing_rows(finance)
     stresses = report_sensitivity(config, metrics)
@@ -286,6 +287,7 @@ def build_report_bytes(config: dict, grid: pd.DataFrame, detail: dict) -> bytes:
         ["综合效率／SOC范围", f"{config['efficiency_pct']:g}%／{config['soc_min_pct']:g}%—{config['soc_max_pct']:g}%"],
         ["预测价差／充电价格上限", f"不低于{config['minimum_spread_yuan_per_mwh']:g}／不高于{config['maximum_charge_price_yuan_per_mwh']:g}元/MWh"],
         ["项目评价期／首次贷款期", f"{config['project_years']}年／{min(config['loan_term_years'],config['project_years'])}年"],
+        ["电池更换安排", f"第{replacement_year}年末更换一次" if replacement_year < config['project_years'] else "评价期内不更换"],
     ], widths=[6, 8.4])
     _add_text(document,
         "工程范围为站内储能及接入工程，不含新建送出线路和主变扩容。报告分别列示调度、运行影响、"
@@ -414,19 +416,19 @@ def build_report_bytes(config: dict, grid: pd.DataFrame, detail: dict) -> bytes:
         "站内公用系统含EMS、通信、计量、保护及站级消防。可选费用本次计入："
         + ("、".join(label for label,key in optional if config[key]) or "无") + "；未计入："
         + ("、".join(label for label,key in optional if not config[key]) or "无") + "。新建送出线路和主变扩容不在投资范围内。")
-    replacement = finance['capex_rep'] > 0
+    replacement = finance.get('battery_replacement_year', replacement_year if finance['capex_rep'] > 0 else None) is not None
     initial_equity = finance['capex'] * finance['equity_ratio'] / 1e4
     _add_table(document, ["资金项目","金额(万元)","条件"], [
         ["初始资本金",_fmt(initial_equity,1),f"比例{config['equity_ratio_pct']:g}%"],
         ["初始贷款",_fmt(finance['loan1']/1e4,1),f"利率{config['loan_rate_pct']:g}%，偿还{min(config['loan_term_years'],config['project_years'])}年"],
-        ["电池更换投资",_fmt(finance['capex_rep']/1e4,1),f"第{BATTERY_REPLACEMENT_YEAR}年末" if replacement else "评价期内不更换"],
+        ["电池更换投资",_fmt(finance['capex_rep']/1e4,1),f"第{replacement_year}年末" if replacement else "评价期内不更换"],
         ["更换电池资本金",_fmt(finance['capex_rep']*finance['equity_ratio']/1e4,1),f"比例{config['equity_ratio_pct']:g}%"],
-        ["更换电池贷款",_fmt(finance['loan2']/1e4,1),f"偿还{min(config['replacement_loan_term_years'],max(0,config['project_years']-BATTERY_REPLACEMENT_YEAR))}年"],
+        ["更换电池贷款",_fmt(finance['loan2']/1e4,1),f"偿还{min(config['replacement_loan_term_years'],max(0,config['project_years']-replacement_year))}年"],
     ], widths=[5.4,3.6,5.4])
     _add_text(document,
         f"初始资本金为{initial_equity:,.1f}万元，贷款{finance['loan1']/1e4:,.1f}万元，按等额本息偿还。"
-        + (f"第{BATTERY_REPLACEMENT_YEAR}年末更换电池，追加投资{finance['capex_rep']/1e4:,.1f}万元，"
-           f"第{BATTERY_REPLACEMENT_YEAR+1}年容量重置；更换投资按相同资本金比例筹措。" if replacement else
+        + (f"第{replacement_year}年末更换电池，追加投资{finance['capex_rep']/1e4:,.1f}万元，"
+           f"第{replacement_year+1}年容量重置；更换投资按相同资本金比例筹措。" if replacement else
            "项目评价期内不更换电池；期末余值按各类资产剩余经济寿命计算，不将所有资产统一按零残值处理。")
         + f"年生产费用按初始投资的{config['om_ratio_pct']:g}%计，为{finance['om']/1e4:,.1f}万元，"
           f"评价期末税后净回收价值{metrics['terminal_net_wan']:,.1f}万元。")
@@ -537,10 +539,10 @@ def build_report_bytes(config: dict, grid: pd.DataFrame, detail: dict) -> bytes:
     _add_heading(document, "附录  主要测算口径与资料来源")
     items = [
         f"数据来源为本次上传的全年生产与市场时序数据、方案A执行结果及同条件网格。样本含{metrics['points']:,}点，来源说明：{metrics['available_power_source']}。",
-        f"评价期{config['project_years']}年，电池年衰减{config['battery_degradation_pct']:g}%；" + (f"第{BATTERY_REPLACEMENT_YEAR}年末更换电池，第{BATTERY_REPLACEMENT_YEAR+1}年容量重置。" if replacement else "评价期内不更换电池。"),
+        f"评价期{config['project_years']}年，电池年衰减{config['battery_degradation_pct']:g}%；" + (f"第{replacement_year}年末更换电池，第{replacement_year+1}年容量重置。" if replacement else "评价期内不更换电池。"),
         f"资本金比例{config['equity_ratio_pct']:g}%，贷款利率{config['loan_rate_pct']:g}%，首次贷款输入期限{config['loan_term_years']}年，更换贷款输入期限{config['replacement_loan_term_years']}年，实际期限不超过剩余评价期。",
         f"资本金折现率{config['equity_discount_rate_pct']:g}%，加权平均资本成本{finance['wacc']*100:.2f}%，所得税率{config['income_tax_pct']:g}%，年生产费用为初始投资的{config['om_ratio_pct']:g}%。",
-        "电池、功率设备、土建场地和前期费用分别按相应税务寿命折旧或摊销；评价期末按非电池资产剩余经济寿命估算可回收价值，税务账面价值与经济余值分开。",
+        "电池、功率设备、土建场地和前期费用分别按相应税务寿命折旧或摊销，更换年份与税务折旧寿命分别设置。原电池提前更换按零处置收入测算，未折完账面价值计入更换当年费用；评价期末按非电池资产剩余经济寿命估算可回收价值，税务账面价值与经济余值分开。",
     ]
     for i,text in enumerate(items,1):
         _add_text(document, f"{i}. {text}")
